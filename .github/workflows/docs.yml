@@ -1,0 +1,24 @@
+name: Docs
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'README.md'
+      - 'docs/**'
+      - '.md2confl.yml'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Publish to Confluence
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace" \
+            -e CONFLUENCE_URL="${{ secrets.CONFLUENCE_URL }}" \
+            -e CONFLUENCE_EMAIL="${{ secrets.CONFLUENCE_EMAIL }}" \
+            -e CONFLUENCE_TOKEN="${{ secrets.CONFLUENCE_TOKEN }}" \
+            fmnapoli/md2confl:latest \
+            --config .md2confl.yml

@@ -1,0 +1,31 @@
+# .md2confl.yml
+url: https://fmnapoli.atlassian.net
+space: DDS
+email: fmnapoli@gmail.com
+force: true
+write-marker: true
+
+documents:
+  - input: README.md
+    title: "md2confl"
+
+  - input: docs/quickstart.md
+    parent-id: "589826"
+
+  - input: docs/instalacao.md
+    parent-id: "589826"
+
+  - input: docs/referencia.md
+    parent-id: "589826"
+
+  - input: docs/configuracao.md
+    parent-id: "589826"
+
+  - input: docs/publicacao.md
+    parent-id: "589826"
+
+  - input: docs/desenvolvimento.md
+    parent-id: "589826"
+
+  - input: docs/ci-cd.md
+    parent-id: "589826"

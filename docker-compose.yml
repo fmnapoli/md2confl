@@ -7,6 +7,7 @@
 #   docker compose run --rm dry-run              # Preview publish simulation
 #   docker compose run --rm dry-run-mermaid      # Preview with Mermaid → SVG
 #   docker compose run --rm publish              # Publish to Confluence Cloud
+#   docker compose run --rm publish-docs         # Publish all docs via .md2confl.yml
 #
 # All services build the image from the local Dockerfile before running.
 # Edit .env to configure Confluence credentials.
@@ -50,3 +51,11 @@ services:
       - .:/workspace
     env_file: .env
     command: ["--input", "README.md", "--publish", "--space", "${CONFLUENCE_SPACE:-TEST}", "--title", "md2confl"]
+
+  publish-docs:
+    build: .
+    network_mode: host
+    volumes:
+      - .:/workspace
+    env_file: .env
+    command: ["--config", ".md2confl.yml"]
