@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "type": "doc",
+  "content": [
+    {
+      "type": "codeBlock",
+      "attrs": {
+        "language": "mermaid"
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "graph TD;\n    A--\u003eB;"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Some text between"
+        },
+        {
+          "type": "text",
+          "text": " diagrams."
+        }
+      ]
+    },
+    {
+      "type": "codeBlock",
+      "attrs": {
+        "language": "mermaid"
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "sequenceDiagram\n    Alice-\u003e\u003eBob: Hello\n    Bob-\u003e\u003eAlice: Hi!"
+        }
+      ]
+    }
+  ]
+}
