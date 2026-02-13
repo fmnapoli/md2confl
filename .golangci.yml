@@ -21,9 +21,8 @@ linters:
         - (*os.File).Close
         - (io.ReadCloser).Close
         - os.Remove
-
-issues:
-  exclude-dirs:
-    - bin
-    - dist
-    - testdata
+  exclusions:
+    paths:
+      - bin
+      - dist
+      - testdata
