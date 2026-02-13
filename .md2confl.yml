@@ -4,6 +4,7 @@ space: DDS
 email: fmnapoli@gmail.com
 force: true
 write-marker: true
+repo-url: https://github.com/fmnapoli/md2confl/blob/main/
 
 documents:
   - input: README.md

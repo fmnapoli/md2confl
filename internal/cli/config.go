@@ -20,6 +20,7 @@ type Config struct {
 	ParentID    string      `yaml:"parent-id"`
 	Force       *bool       `yaml:"force"`
 	WriteMarker *bool       `yaml:"write-marker"`
+	RepoURL     string      `yaml:"repo-url"`
 	Documents   []DocConfig `yaml:"documents"`
 }
 
@@ -113,6 +114,9 @@ func (app *appEnv) applyConfig(explicitFlags map[string]bool) {
 	}
 	if !explicitFlags["write-marker"] && cfg.WriteMarker != nil {
 		app.writeMarker = *cfg.WriteMarker
+	}
+	if !explicitFlags["repo-url"] && cfg.RepoURL != "" {
+		app.repoURL = cfg.RepoURL
 	}
 }
 

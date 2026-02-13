@@ -51,6 +51,8 @@ type appEnv struct {
 	renderMermaid  bool
 	showVersion    bool
 	configPath  string
+	repoURL     string
+	repoRoot    string
 	config      *Config
 	docResults  map[string]*docPublishResult // abs input path → result
 
@@ -118,6 +120,7 @@ func (app *appEnv) fromArgs(args []string) error {
 	fs.BoolVar(&app.jsonOutput, "json", false, "Output in JSON format")
 	fs.BoolVar(&app.showVersion, "version", false, "Show version")
 	fs.StringVar(&app.configPath, "config", "", "Path to config file (default: auto-detect .md2confl.yml)")
+	fs.StringVar(&app.repoURL, "repo-url", "", "Repository base URL for resolving non-Markdown links (auto-detected from git)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(app.stderr, "md2confl — Convert Markdown to Confluence ADF and publish\n\n")
@@ -241,6 +244,17 @@ func (app *appEnv) fromArgs(args []string) error {
 }
 
 func (app *appEnv) run() error {
+	// Auto-detect repo URL for resolving non-Markdown links
+	if app.repoURL == "" {
+		app.repoURL, app.repoRoot = detectRepoURL()
+	} else if app.repoRoot == "" {
+		// Explicit repo-url but no root — try git, fall back to .git walk
+		app.repoRoot, _ = gitOutput("rev-parse", "--show-toplevel")
+		if app.repoRoot == "" {
+			app.repoRoot = findRepoRoot()
+		}
+	}
+
 	// Multi-document mode: no --input but config has documents
 	if app.input == "" && app.config != nil && len(app.config.Documents) > 0 {
 		return app.runDocuments("")
@@ -1047,7 +1061,7 @@ func (app *appEnv) resolveInterDocLinksFromResults() error {
 		}
 
 		baseDir := filepath.Dir(absPath)
-		count := patchDocLinks(res.finalADF, baseDir, linkMap)
+		count := patchDocLinks(res.finalADF, baseDir, linkMap, app.repoURL, app.repoRoot)
 		if count == 0 {
 			continue
 		}
@@ -1087,7 +1101,7 @@ func (app *appEnv) previewInterDocLinksFromResults() {
 		}
 
 		baseDir := filepath.Dir(absPath)
-		count := countResolvableLinks(res.finalADF, baseDir, linkMap)
+		count := countResolvableLinks(res.finalADF, baseDir, linkMap, app.repoURL, app.repoRoot)
 		if count > 0 {
 			fmt.Fprintf(app.stderr, "Dry-run: would resolve %d inter-document link(s) in %q\n", count, filepath.Base(absPath))
 		}
@@ -1095,16 +1109,16 @@ func (app *appEnv) previewInterDocLinksFromResults() {
 }
 
 // countResolvableLinks counts how many relative links in the ADF document
-// could be resolved against the linkMap, without modifying the tree.
-func countResolvableLinks(doc *adf.Document, baseDir string, linkMap map[string]string) int {
+// could be resolved against the linkMap or repo URL, without modifying the tree.
+func countResolvableLinks(doc *adf.Document, baseDir string, linkMap map[string]string, repoURL, repoRoot string) int {
 	count := 0
 	for i := range doc.Content {
-		count += countNodeResolvableLinks(&doc.Content[i], baseDir, linkMap)
+		count += countNodeResolvableLinks(&doc.Content[i], baseDir, linkMap, repoURL, repoRoot)
 	}
 	return count
 }
 
-func countNodeResolvableLinks(node *adf.Node, baseDir string, linkMap map[string]string) int {
+func countNodeResolvableLinks(node *adf.Node, baseDir string, linkMap map[string]string, repoURL, repoRoot string) int {
 	count := 0
 
 	for _, mark := range node.Marks {
@@ -1135,11 +1149,16 @@ func countNodeResolvableLinks(node *adf.Node, baseDir string, linkMap map[string
 
 		if _, found := linkMap[absResolved]; found {
 			count++
+		} else if repoURL != "" && repoRoot != "" {
+			relPath, err := filepath.Rel(repoRoot, absResolved)
+			if err == nil && !strings.HasPrefix(relPath, "..") {
+				count++
+			}
 		}
 	}
 
 	for i := range node.Content {
-		count += countNodeResolvableLinks(&node.Content[i], baseDir, linkMap)
+		count += countNodeResolvableLinks(&node.Content[i], baseDir, linkMap, repoURL, repoRoot)
 	}
 
 	return count
@@ -1167,17 +1186,18 @@ func updatePageWithRetry(client *confluence.Client, pageID, title, adfJSON strin
 }
 
 // patchDocLinks walks the ADF tree and replaces relative Markdown link hrefs
-// with Confluence page URLs using the provided linkMap. Returns the number of
-// links patched.
-func patchDocLinks(doc *adf.Document, baseDir string, linkMap map[string]string) int {
+// with Confluence page URLs using the provided linkMap. Links not found in
+// linkMap are resolved to the repository URL if repoURL and repoRoot are set.
+// Returns the number of links patched.
+func patchDocLinks(doc *adf.Document, baseDir string, linkMap map[string]string, repoURL, repoRoot string) int {
 	count := 0
 	for i := range doc.Content {
-		count += patchNodeLinks(&doc.Content[i], baseDir, linkMap)
+		count += patchNodeLinks(&doc.Content[i], baseDir, linkMap, repoURL, repoRoot)
 	}
 	return count
 }
 
-func patchNodeLinks(node *adf.Node, baseDir string, linkMap map[string]string) int {
+func patchNodeLinks(node *adf.Node, baseDir string, linkMap map[string]string, repoURL, repoRoot string) int {
 	count := 0
 
 	// Check marks for link references
@@ -1215,12 +1235,18 @@ func patchNodeLinks(node *adf.Node, baseDir string, linkMap map[string]string) i
 		if pageURL, found := linkMap[absResolved]; found {
 			node.Marks[i].Attrs["href"] = pageURL + fragment
 			count++
+		} else if repoURL != "" && repoRoot != "" {
+			relPath, err := filepath.Rel(repoRoot, absResolved)
+			if err == nil && !strings.HasPrefix(relPath, "..") {
+				node.Marks[i].Attrs["href"] = repoURL + relPath + fragment
+				count++
+			}
 		}
 	}
 
 	// Recurse into children
 	for i := range node.Content {
-		count += patchNodeLinks(&node.Content[i], baseDir, linkMap)
+		count += patchNodeLinks(&node.Content[i], baseDir, linkMap, repoURL, repoRoot)
 	}
 
 	return count

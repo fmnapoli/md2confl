@@ -1187,7 +1187,7 @@ func TestPatchDocLinks(t *testing.T) {
 				},
 			}
 
-			got := patchDocLinks(doc, tt.baseDir, linkMap)
+			got := patchDocLinks(doc, tt.baseDir, linkMap, "", "")
 			if got != tt.patchCount {
 				t.Errorf("patchDocLinks returned %d, want %d", got, tt.patchCount)
 			}
@@ -1236,7 +1236,7 @@ func TestPatchDocLinks_MultipleLinks(t *testing.T) {
 		},
 	}
 
-	count := patchDocLinks(doc, "/docs", linkMap)
+	count := patchDocLinks(doc, "/docs", linkMap, "", "")
 	if count != 2 {
 		t.Errorf("expected patchDocLinks to return 2, got %d", count)
 	}
@@ -1285,7 +1285,7 @@ func TestPatchDocLinks_NestedContent(t *testing.T) {
 		},
 	}
 
-	count := patchDocLinks(doc, "/docs", linkMap)
+	count := patchDocLinks(doc, "/docs", linkMap, "", "")
 	if count != 1 {
 		t.Errorf("expected patchDocLinks to return 1, got %d", count)
 	}
@@ -1392,7 +1392,7 @@ func TestResolveInterDocLinks(t *testing.T) {
 	}
 
 	baseDir := filepath.Dir(doc1Path)
-	count := patchDocLinks(doc1ADF, baseDir, linkMap)
+	count := patchDocLinks(doc1ADF, baseDir, linkMap, "", "")
 	if count != 1 {
 		t.Fatalf("expected 1 link patched in doc1, got %d", count)
 	}
@@ -1403,7 +1403,7 @@ func TestResolveInterDocLinks(t *testing.T) {
 	}
 
 	// doc2 should NOT be patched (no inter-doc links)
-	count = patchDocLinks(doc2ADF, baseDir, linkMap)
+	count = patchDocLinks(doc2ADF, baseDir, linkMap, "", "")
 	if count != 0 {
 		t.Errorf("doc2 should not have inter-doc links, got %d", count)
 	}
@@ -1484,7 +1484,7 @@ func TestCountResolvableLinks(t *testing.T) {
 		},
 	}
 
-	count := countResolvableLinks(doc, "/docs", linkMap)
+	count := countResolvableLinks(doc, "/docs", linkMap, "", "")
 	if count != 2 {
 		t.Errorf("expected 2 resolvable links, got %d", count)
 	}
@@ -1523,5 +1523,185 @@ documents:
 	}
 	if !strings.Contains(stderr.String(), "1 inter-document link(s)") {
 		t.Errorf("expected link count in preview, got %q", stderr.String())
+	}
+}
+
+func TestPatchDocLinks_RepoURL(t *testing.T) {
+	// linkMap has only published docs; LICENSE is not published
+	linkMap := map[string]string{
+		"/repo/docs/setup.md": "https://site.atlassian.net/wiki/pages/1/Setup",
+	}
+
+	tests := []struct {
+		name       string
+		href       string
+		baseDir    string
+		repoURL    string
+		repoRoot   string
+		expectURL  string
+		patchCount int
+	}{
+		{
+			name:       "non-md link resolved to repo URL",
+			href:       "LICENSE",
+			baseDir:    "/repo",
+			repoURL:    "https://github.com/user/repo/blob/main/",
+			repoRoot:   "/repo",
+			expectURL:  "https://github.com/user/repo/blob/main/LICENSE",
+			patchCount: 1,
+		},
+		{
+			name:       "non-md link from subdirectory",
+			href:       "../LICENSE",
+			baseDir:    "/repo/docs",
+			repoURL:    "https://github.com/user/repo/blob/main/",
+			repoRoot:   "/repo",
+			expectURL:  "https://github.com/user/repo/blob/main/LICENSE",
+			patchCount: 1,
+		},
+		{
+			name:       "published md link resolved via linkMap (not repo URL)",
+			href:       "setup.md",
+			baseDir:    "/repo/docs",
+			repoURL:    "https://github.com/user/repo/blob/main/",
+			repoRoot:   "/repo",
+			expectURL:  "https://site.atlassian.net/wiki/pages/1/Setup",
+			patchCount: 1,
+		},
+		{
+			name:       "link outside repo root not resolved",
+			href:       "../../outside",
+			baseDir:    "/repo",
+			repoURL:    "https://github.com/user/repo/blob/main/",
+			repoRoot:   "/repo",
+			expectURL:  "../../outside",
+			patchCount: 0,
+		},
+		{
+			name:       "non-md link with fragment",
+			href:       "Makefile#target",
+			baseDir:    "/repo",
+			repoURL:    "https://github.com/user/repo/blob/main/",
+			repoRoot:   "/repo",
+			expectURL:  "https://github.com/user/repo/blob/main/Makefile#target",
+			patchCount: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := &adf.Document{
+				Version: 1,
+				Type:    "doc",
+				Content: []adf.Node{
+					{
+						Type: "paragraph",
+						Content: []adf.Node{
+							{
+								Type: "text",
+								Text: "Click here",
+								Marks: []adf.Mark{
+									{Type: "link", Attrs: map[string]any{"href": tt.href}},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			got := patchDocLinks(doc, tt.baseDir, linkMap, tt.repoURL, tt.repoRoot)
+			if got != tt.patchCount {
+				t.Errorf("patchDocLinks returned %d, want %d", got, tt.patchCount)
+			}
+
+			href := doc.Content[0].Content[0].Marks[0].Attrs["href"].(string)
+			if href != tt.expectURL {
+				t.Errorf("href = %q, want %q", href, tt.expectURL)
+			}
+		})
+	}
+}
+
+func TestPatchDocLinks_NoRepoURL(t *testing.T) {
+	// Without repoURL, non-published links stay unchanged
+	linkMap := map[string]string{}
+	doc := &adf.Document{
+		Version: 1,
+		Type:    "doc",
+		Content: []adf.Node{
+			{
+				Type: "paragraph",
+				Content: []adf.Node{
+					{
+						Type: "text",
+						Text: "License",
+						Marks: []adf.Mark{
+							{Type: "link", Attrs: map[string]any{"href": "LICENSE"}},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	count := patchDocLinks(doc, "/repo", linkMap, "", "")
+	if count != 0 {
+		t.Errorf("expected 0 patches without repoURL, got %d", count)
+	}
+
+	href := doc.Content[0].Content[0].Marks[0].Attrs["href"].(string)
+	if href != "LICENSE" {
+		t.Errorf("href should be unchanged, got %q", href)
+	}
+}
+
+func TestCountResolvableLinks_WithRepoURL(t *testing.T) {
+	linkMap := map[string]string{
+		"/repo/docs/target.md": "https://site.atlassian.net/wiki/pages/1/Target",
+	}
+
+	doc := &adf.Document{
+		Version: 1,
+		Type:    "doc",
+		Content: []adf.Node{
+			{
+				Type: "paragraph",
+				Content: []adf.Node{
+					{
+						Type: "text",
+						Text: "Link to published",
+						Marks: []adf.Mark{
+							{Type: "link", Attrs: map[string]any{"href": "docs/target.md"}},
+						},
+					},
+					{
+						Type: "text",
+						Text: "Link to LICENSE",
+						Marks: []adf.Mark{
+							{Type: "link", Attrs: map[string]any{"href": "LICENSE"}},
+						},
+					},
+					{
+						Type: "text",
+						Text: "External",
+						Marks: []adf.Mark{
+							{Type: "link", Attrs: map[string]any{"href": "https://example.com"}},
+						},
+					},
+					{
+						Type: "text",
+						Text: "Outside repo",
+						Marks: []adf.Mark{
+							{Type: "link", Attrs: map[string]any{"href": "../../outside"}},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	count := countResolvableLinks(doc, "/repo", linkMap, "https://github.com/user/repo/blob/main/", "/repo")
+	if count != 2 {
+		t.Errorf("expected 2 resolvable links (1 linkMap + 1 repoURL), got %d", count)
 	}
 }
