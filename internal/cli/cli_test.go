@@ -25,8 +25,9 @@ func TestExtractPageID(t *testing.T) {
 	}{
 		{"with marker", "<!-- confluence-page-id: 12345 -->\n# Title", "12345"},
 		{"no marker", "# Title\nContent", ""},
-		{"marker at end", "# Title\n<!-- confluence-page-id: 99999 -->", "99999"},
+		{"marker at end ignored", "# Title\n<!-- confluence-page-id: 99999 -->", ""},
 		{"extra spaces", "<!--  confluence-page-id:  67890  -->", "67890"},
+		{"marker in code block ignored", "```\n<!-- confluence-page-id: 11111 -->\n```", ""},
 	}
 
 	for _, tt := range tests {
@@ -126,14 +127,17 @@ func TestPatchLocalImages(t *testing.T) {
 		},
 	}
 
-	patchLocalImages(doc, map[string]string{"./img/photo.png": "att999"})
+	patchLocalImages(doc, map[string]string{"./img/photo.png": "file-uuid-999"}, "12345")
 
 	media := doc.Content[0].Content[0]
 	if media.Attrs["type"] != "file" {
 		t.Errorf("expected type 'file', got %v", media.Attrs["type"])
 	}
-	if media.Attrs["id"] != "att999" {
-		t.Errorf("expected id 'att999', got %v", media.Attrs["id"])
+	if media.Attrs["id"] != "file-uuid-999" {
+		t.Errorf("expected id 'file-uuid-999', got %v", media.Attrs["id"])
+	}
+	if media.Attrs["collection"] != "contentId-12345" {
+		t.Errorf("expected collection 'contentId-12345', got %v", media.Attrs["collection"])
 	}
 	if _, exists := media.Attrs["url"]; exists {
 		t.Error("expected url to be removed")

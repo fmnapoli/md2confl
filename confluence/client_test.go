@@ -313,6 +313,37 @@ func TestUploadAttachment(t *testing.T) {
 		}
 		json.NewEncoder(w).Encode(map[string]any{
 			"results": []map[string]any{
+				{
+					"id":    "att123",
+					"title": "test.png",
+					"extensions": map[string]any{
+						"fileId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+					},
+				},
+			},
+		})
+	})
+	defer ts.Close()
+
+	id, err := client.UploadAttachment("999", testFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "a1b2c3d4-e5f6-7890-abcd-ef1234567890" {
+		t.Errorf("expected file ID UUID, got %s", id)
+	}
+}
+
+func TestUploadAttachment_FallbackToAttID(t *testing.T) {
+	dir := t.TempDir()
+	testFile := filepath.Join(dir, "test.png")
+	if err := os.WriteFile(testFile, []byte("fake-png-data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ts, client := newTestServer(func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{
 				{"id": "att123", "title": "test.png"},
 			},
 		})
@@ -324,6 +355,6 @@ func TestUploadAttachment(t *testing.T) {
 		t.Fatal(err)
 	}
 	if id != "att123" {
-		t.Errorf("expected att123, got %s", id)
+		t.Errorf("expected fallback to att123, got %s", id)
 	}
 }

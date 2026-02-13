@@ -285,3 +285,50 @@ func TestUploadAttachment_EmptyResults(t *testing.T) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
+
+func TestUploadAttachment_DuplicateFilename(t *testing.T) {
+	callCount := 0
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if r.Method == "POST" {
+			w.WriteHeader(400)
+			_, _ = io.WriteString(w, `{"message":"Cannot add a new attachment with same file name as an existing attachment: test.png"}`)
+			return
+		}
+		// GET request to look up existing attachment
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{
+				{
+					"id":    "att456",
+					"title": "test.png",
+					"extensions": map[string]any{
+						"fileId": "existing-file-uuid",
+					},
+				},
+			},
+		})
+	}))
+	defer ts.Close()
+
+	client, _ := NewClient(Config{
+		BaseURL: ts.URL, SpaceKey: "T", Email: "e@e.com", Token: "t",
+	})
+	client.httpClient = ts.Client()
+
+	dir := t.TempDir()
+	f := filepath.Join(dir, "test.png")
+	if err := os.WriteFile(f, []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	id, err := client.UploadAttachment("123", f)
+	if err != nil {
+		t.Fatalf("expected fallback to existing attachment, got error: %v", err)
+	}
+	if id != "existing-file-uuid" {
+		t.Errorf("expected existing-file-uuid, got %s", id)
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 API calls (POST + GET), got %d", callCount)
+	}
+}

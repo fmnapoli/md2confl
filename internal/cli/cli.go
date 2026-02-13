@@ -7,6 +7,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -333,7 +334,13 @@ func (app *appEnv) handleFileOutput(path string, adfJSON []byte) error {
 var pageIDRegex = regexp.MustCompile(`<!--\s*confluence-page-id:\s*(\d+)\s*-->`)
 
 func extractPageID(source []byte) string {
-	match := pageIDRegex.FindSubmatch(source)
+	// Only check the first line — the marker is always prepended at the top.
+	// This avoids false matches inside code blocks or documentation examples.
+	firstLine := source
+	if idx := bytes.IndexByte(source, '\n'); idx >= 0 {
+		firstLine = source[:idx]
+	}
+	match := pageIDRegex.FindSubmatch(firstLine)
 	if match != nil {
 		return string(match[1])
 	}
@@ -404,7 +411,10 @@ func (app *appEnv) handlePublish(path string, source, adfJSON []byte, doc *adf.D
 		baseDir := filepath.Dir(path)
 		attachmentMap := map[string]string{} // url -> attachment ID
 		for _, imgURL := range localImages {
-			imgPath := filepath.Join(baseDir, imgURL)
+			imgPath := imgURL
+			if !filepath.IsAbs(imgURL) {
+				imgPath = filepath.Join(baseDir, imgURL)
+			}
 			if _, err := os.Stat(imgPath); err != nil {
 				fmt.Fprintf(app.stderr, "Warning: local image not found: %s\n", imgPath)
 				continue
@@ -417,7 +427,7 @@ func (app *appEnv) handlePublish(path string, source, adfJSON []byte, doc *adf.D
 			attachmentMap[imgURL] = attID
 		}
 		if len(attachmentMap) > 0 {
-			patchLocalImages(doc, attachmentMap)
+			patchLocalImages(doc, attachmentMap, result.PageID)
 			patchedJSON, err := json.MarshalIndent(doc, "", "  ")
 			if err == nil {
 				// Get current version for update
@@ -803,27 +813,27 @@ func collectLocalImages(node *adf.Node, images *[]string) {
 }
 
 // patchLocalImages replaces external media nodes for local images with file attachment references.
-func patchLocalImages(doc *adf.Document, attachmentMap map[string]string) {
+func patchLocalImages(doc *adf.Document, attachmentMap map[string]string, pageID string) {
 	for i := range doc.Content {
-		patchNode(&doc.Content[i], attachmentMap)
+		patchNode(&doc.Content[i], attachmentMap, pageID)
 	}
 }
 
-func patchNode(node *adf.Node, attachmentMap map[string]string) {
+func patchNode(node *adf.Node, attachmentMap map[string]string, pageID string) {
 	if node.Type == "media" {
 		if t, ok := node.Attrs["type"].(string); ok && t == "external" {
 			if u, ok := node.Attrs["url"].(string); ok {
-				if attID, found := attachmentMap[u]; found {
+				if fileID, found := attachmentMap[u]; found {
 					node.Attrs["type"] = "file"
-					node.Attrs["id"] = attID
-					node.Attrs["collection"] = ""
+					node.Attrs["id"] = fileID
+					node.Attrs["collection"] = "contentId-" + pageID
 					delete(node.Attrs, "url")
 				}
 			}
 		}
 	}
 	for i := range node.Content {
-		patchNode(&node.Content[i], attachmentMap)
+		patchNode(&node.Content[i], attachmentMap, pageID)
 	}
 }
 

@@ -309,7 +309,27 @@ func (c *Client) FindByTitle(spaceID, title string) (*pageResponse, error) {
 	return &result.Results[0], nil
 }
 
+// attachmentResult holds the parsed fields from an attachment API response entry.
+type attachmentResult struct {
+	ID         string `json:"id"`
+	Title      string `json:"title"`
+	Extensions struct {
+		FileID string `json:"fileId"`
+	} `json:"extensions"`
+}
+
+// fileID returns the file ID (UUID) needed for ADF media nodes,
+// falling back to the attachment ID if fileId is absent.
+func (a *attachmentResult) fileID() string {
+	if a.Extensions.FileID != "" {
+		return a.Extensions.FileID
+	}
+	return a.ID
+}
+
 // UploadAttachment uploads a file as an attachment to a page (uses API v1).
+// If an attachment with the same filename already exists, it returns the
+// existing attachment's file ID instead of failing.
 func (c *Client) UploadAttachment(pageID, filePath string) (string, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -331,12 +351,56 @@ func (c *Client) UploadAttachment(pageID, filePath string) (string, error) {
 	}
 
 	baseURL := strings.TrimRight(c.config.BaseURL, "/")
-	url := fmt.Sprintf("%s/wiki/rest/api/content/%s/child/attachment", baseURL, pageID)
-	req, err := http.NewRequest("POST", url, &buf)
+	apiURL := fmt.Sprintf("%s/wiki/rest/api/content/%s/child/attachment", baseURL, pageID)
+	req, err := http.NewRequest("POST", apiURL, &buf)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("X-Atlassian-Token", "no-check")
+
+	resp, err := c.doRequest(req)
+	if err != nil {
+		return "", &APIError{Category: ErrCategoryNetwork, Message: fmt.Sprintf("network error: %v", err)}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 400 {
+		// Check if the error is a duplicate filename — look up the existing attachment.
+		body, _ := io.ReadAll(resp.Body)
+		if strings.Contains(string(body), "same file name") {
+			return c.getAttachmentFileID(pageID, filepath.Base(filePath))
+		}
+		return "", validationError(string(body))
+	}
+
+	if resp.StatusCode != 200 {
+		return "", c.handleErrorResponse(resp)
+	}
+
+	var result struct {
+		Results []attachmentResult `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("decoding attachment response: %w", err)
+	}
+
+	if len(result.Results) == 0 {
+		return "", fmt.Errorf("no attachment ID in response")
+	}
+
+	return result.Results[0].fileID(), nil
+}
+
+// getAttachmentFileID looks up an existing attachment by filename and returns its file ID.
+func (c *Client) getAttachmentFileID(pageID, filename string) (string, error) {
+	baseURL := strings.TrimRight(c.config.BaseURL, "/")
+	apiURL := fmt.Sprintf("%s/wiki/rest/api/content/%s/child/attachment?filename=%s",
+		baseURL, pageID, url.QueryEscape(filename))
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return "", err
+	}
 	req.Header.Set("X-Atlassian-Token", "no-check")
 
 	resp, err := c.doRequest(req)
@@ -350,18 +414,15 @@ func (c *Client) UploadAttachment(pageID, filePath string) (string, error) {
 	}
 
 	var result struct {
-		Results []struct {
-			ID    string `json:"id"`
-			Title string `json:"title"`
-		} `json:"results"`
+		Results []attachmentResult `json:"results"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", fmt.Errorf("decoding attachment response: %w", err)
 	}
 
 	if len(result.Results) == 0 {
-		return "", fmt.Errorf("no attachment ID in response")
+		return "", fmt.Errorf("attachment %q not found on page %s", filename, pageID)
 	}
 
-	return result.Results[0].ID, nil
+	return result.Results[0].fileID(), nil
 }
