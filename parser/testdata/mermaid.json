@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "type": "doc",
+  "content": [
+    {
+      "type": "codeBlock",
+      "attrs": {
+        "language": "mermaid"
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "graph TD;\n    A--\u003eB;\n    A--\u003eC;\n    B--\u003eD;"
+        }
+      ]
+    }
+  ]
+}
