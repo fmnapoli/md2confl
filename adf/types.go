@@ -1,6 +1,12 @@
 // Copyright 2026 md2confl contributors
 // SPDX-License-Identifier: Apache-2.0
 
+// Package adf defines the Atlassian Document Format (ADF) data structures.
+// ADF is a JSON-based document format used by Confluence Cloud to represent
+// rich-text content. The core types — [Document], [Node], and [Mark] — model
+// the full ADF tree: a Document contains block-level Nodes (paragraphs,
+// headings, tables, …), which in turn contain inline Nodes carrying Marks
+// (bold, italic, links, …).
 package adf
 
 // Document is the top-level ADF envelope.

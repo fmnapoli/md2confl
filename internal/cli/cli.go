@@ -1,6 +1,9 @@
 // Copyright 2026 md2confl contributors
 // SPDX-License-Identifier: Apache-2.0
 
+// Package cli implements the md2confl command-line interface.
+// It wires together flag parsing, Markdown→ADF conversion, and Confluence
+// publishing. This package is internal — only cmd/md2confl/main.go imports it.
 package cli
 
 import (

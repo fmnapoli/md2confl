@@ -1,6 +1,10 @@
 // Copyright 2026 md2confl contributors
 // SPDX-License-Identifier: Apache-2.0
 
+// Package confluence provides a REST API v2 client for Confluence Cloud.
+// It supports creating and updating pages, resolving space IDs, searching by
+// title, and uploading file attachments. All API errors are returned as
+// [*APIError] with a category, HTTP status code, and actionable hint.
 package confluence
 
 import (

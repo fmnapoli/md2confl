@@ -1,6 +1,10 @@
 // Copyright 2026 md2confl contributors
 // SPDX-License-Identifier: Apache-2.0
 
+// Package parser converts Markdown source into an ADF [adf.Document].
+// It uses goldmark to parse Markdown (with GFM extensions) into an AST, then
+// walks the AST with a stack-based visitor to build the corresponding ADF
+// node tree. The single entry point is [ConvertToADF].
 package parser
 
 import (
