@@ -1,0 +1,52 @@
+# docker-compose.yml — Local testing with auto-build
+#
+# Usage:
+#   docker compose run --rm convert              # Markdown → ADF (stdout)
+#   docker compose run --rm convert-mermaid      # Markdown → ADF with Mermaid → SVG
+#   docker compose run --rm convert-file         # Markdown → ADF file
+#   docker compose run --rm dry-run              # Preview publish simulation
+#   docker compose run --rm dry-run-mermaid      # Preview with Mermaid → SVG
+#   docker compose run --rm publish              # Publish to Confluence Cloud
+#
+# All services build the image from the local Dockerfile before running.
+# Edit .env to configure Confluence credentials.
+
+services:
+  convert:
+    build: .
+    volumes:
+      - .:/workspace
+    command: ["--input", "README.md"]
+
+  convert-mermaid:
+    build: .
+    volumes:
+      - .:/workspace
+    command: ["--input", "README.md", "--mermaid"]
+
+  convert-file:
+    build: .
+    volumes:
+      - .:/workspace
+    command: ["--input", "README.md", "--output", "/workspace/output.json"]
+
+  dry-run:
+    build: .
+    volumes:
+      - .:/workspace
+    env_file: .env
+    command: ["--input", "README.md", "--dry-run", "--publish", "--space", "${CONFLUENCE_SPACE:-TEST}", "--title", "md2confl"]
+
+  dry-run-mermaid:
+    build: .
+    volumes:
+      - .:/workspace
+    env_file: .env
+    command: ["--input", "README.md", "--dry-run", "--mermaid", "--publish", "--space", "${CONFLUENCE_SPACE:-TEST}", "--title", "md2confl"]
+
+  publish:
+    build: .
+    volumes:
+      - .:/workspace
+    env_file: .env
+    command: ["--input", "README.md", "--publish", "--space", "${CONFLUENCE_SPACE:-TEST}", "--title", "md2confl"]

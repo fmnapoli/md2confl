@@ -36,9 +36,10 @@ type appEnv struct {
 	email       string
 	token       string
 	force       bool
-	writeMarker bool
-	jsonOutput  bool
-	showVersion bool
+	writeMarker    bool
+	jsonOutput     bool
+	renderMermaid  bool
+	showVersion    bool
 	configPath  string
 	config      *Config
 
@@ -102,6 +103,7 @@ func (app *appEnv) fromArgs(args []string) error {
 	fs.StringVar(&app.token, "token", "", "Atlassian API token")
 	fs.BoolVar(&app.force, "force", false, "Overwrite existing page with same title")
 	fs.BoolVar(&app.writeMarker, "write-marker", false, "Write page ID marker back to Markdown file")
+	fs.BoolVar(&app.renderMermaid, "mermaid", false, "Render mermaid diagrams to SVG (always enabled with --publish)")
 	fs.BoolVar(&app.jsonOutput, "json", false, "Output in JSON format")
 	fs.BoolVar(&app.showVersion, "version", false, "Show version")
 	fs.StringVar(&app.configPath, "config", "", "Path to config file (default: auto-detect .md2confl.yml)")
@@ -114,6 +116,7 @@ func (app *appEnv) fromArgs(args []string) error {
 		fmt.Fprintf(app.stderr, "Examples:\n")
 		fmt.Fprintf(app.stderr, "  md2confl --input doc.md --output doc.json     Convert to ADF file\n")
 		fmt.Fprintf(app.stderr, "  md2confl --input doc.md --dry-run             Preview ADF in terminal\n")
+		fmt.Fprintf(app.stderr, "  md2confl --input doc.md --dry-run --mermaid   Preview with Mermaid → SVG\n")
 		fmt.Fprintf(app.stderr, "  md2confl --input doc.md --publish \\           Publish to Confluence\n")
 		fmt.Fprintf(app.stderr, "    --url https://site.atlassian.net \\\n")
 		fmt.Fprintf(app.stderr, "    --space DEVOPS --title \"My Page\"\n")
@@ -266,6 +269,17 @@ func (app *appEnv) runFile(path string) error {
 		return fmt.Errorf("converting %q: %w", path, err)
 	}
 
+	// Render mermaid diagrams to SVG when requested or publishing.
+	if app.publish || app.renderMermaid {
+		rendered, err := renderMermaidBlocks(doc)
+		if err != nil {
+			return err
+		}
+		if rendered {
+			fmt.Fprintf(app.stderr, "Rendered %d mermaid diagram(s) to SVG\n", countMermaidSVGs(doc))
+		}
+	}
+
 	adfJSON, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling ADF: %w", err)
@@ -335,18 +349,6 @@ func (app *appEnv) handlePublish(path string, source, adfJSON []byte, doc *adf.D
 	})
 	if err != nil {
 		return &apiError{message: err.Error(), exitCode: 1}
-	}
-
-	// Render mermaid diagrams to SVG before publishing.
-	rendered, err := renderMermaidBlocks(doc)
-	if err != nil {
-		return err
-	}
-	if rendered {
-		adfJSON, err = json.MarshalIndent(doc, "", "  ")
-		if err != nil {
-			return fmt.Errorf("marshaling ADF after mermaid rendering: %w", err)
-		}
 	}
 
 	// Resolve space ID
@@ -888,6 +890,7 @@ func patchMermaidBlock(block mermaidBlock, svgPath string) {
 
 // renderMermaidBlocks renders all mermaid codeBlocks in the ADF document to SVG
 // and patches them in-place. Returns true if any blocks were rendered.
+// If mmdc is not available, blocks are left as codeBlocks (no error).
 func renderMermaidBlocks(doc *adf.Document) (bool, error) {
 	blocks := findMermaidBlocks(doc)
 	if len(blocks) == 0 {
@@ -895,7 +898,8 @@ func renderMermaidBlocks(doc *adf.Document) (bool, error) {
 	}
 
 	if err := mermaid.EnsureAvailable(); err != nil {
-		return false, err
+		// mmdc not installed — skip rendering silently
+		return false, nil
 	}
 
 	tempDir, err := os.MkdirTemp("", "md2confl-mermaid-*")
@@ -915,4 +919,21 @@ func renderMermaidBlocks(doc *adf.Document) (bool, error) {
 	}
 
 	return true, nil
+}
+
+// countMermaidSVGs counts how many media nodes reference SVG files from mermaid rendering.
+func countMermaidSVGs(doc *adf.Document) int {
+	count := 0
+	for _, node := range doc.Content {
+		if node.Type == "mediaSingle" {
+			for _, child := range node.Content {
+				if child.Type == "media" {
+					if url, ok := child.Attrs["url"].(string); ok && strings.Contains(url, "mermaid-") {
+						count++
+					}
+				}
+			}
+		}
+	}
+	return count
 }

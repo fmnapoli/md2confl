@@ -316,6 +316,7 @@ Output de erro:
 | `--token` | `string` | — | API token da Atlassian. Fallback: `CONFLUENCE_TOKEN`. **Aviso:** passar via flag expõe o token no histórico do shell. |
 | `--force` | `bool` | `false` | Busca página existente com o mesmo título no espaço e atualiza em vez de criar nova. Requer `--publish`. |
 | `--write-marker` | `bool` | `false` | Após publicação bem-sucedida, escreve `<!-- confluence-page-id: XXXXX -->` no topo do arquivo Markdown fonte. Permite atualizações idempotentes futuras. Requer `--publish`. |
+| `--mermaid` | `bool` | `false` | Renderiza blocos mermaid para SVG via `mmdc`. Sempre ativo com `--publish`. Use com `--dry-run` ou `--output` para preview dos diagramas renderizados. |
 | `--json` | `bool` | `false` | Formata output (sucesso e erro) como JSON em vez de texto. Útil para integração com CI/CD. |
 | `--version` | `bool` | `false` | Imprime a versão e sai com exit code 0. |
 
