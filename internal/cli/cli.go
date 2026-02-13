@@ -9,6 +9,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -54,7 +55,7 @@ func Run(args []string, version string, stdout, stderr io.Writer) int {
 	}
 
 	if err := app.fromArgs(args); err != nil {
-		if err == flag.ErrHelp {
+		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
 		printError(stderr, err.Error(), "", 1, false)
@@ -63,7 +64,8 @@ func Run(args []string, version string, stdout, stderr io.Writer) int {
 
 	if err := app.run(); err != nil {
 		code := 1
-		if apiErr, ok := err.(*apiError); ok {
+		var apiErr *apiError
+		if errors.As(err, &apiErr) {
 			code = apiErr.exitCode
 			printError(stderr, apiErr.Error(), apiErr.hint, code, app.jsonOutput)
 		} else {
@@ -393,7 +395,8 @@ func (app *appEnv) handlePublish(path string, source, adfJSON []byte, doc *adf.D
 }
 
 func (app *appEnv) wrapConfluenceError(err error) error {
-	if apiErr, ok := err.(*confluence.APIError); ok {
+	var apiErr *confluence.APIError
+	if errors.As(err, &apiErr) {
 		return &apiError{
 			message:  apiErr.Message,
 			hint:     apiErr.Hint,
@@ -549,7 +552,6 @@ func (app *appEnv) publishDirTree(client *confluence.Client, spaceID, parentID s
 		emptyDoc := adf.NewDocument()
 		adfJSON, _ := json.MarshalIndent(emptyDoc, "", "  ")
 		pageContent = adfJSON
-		pagePath = tree.Path
 	}
 
 	// Determine title

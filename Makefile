@@ -1,10 +1,10 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 BINARY := md2confl
-PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
 LDFLAGS := -X main.Version=$(VERSION)
 LICENSE_HEADER := // Copyright 2026 md2confl contributors\n// SPDX-License-Identifier: Apache-2.0
+COVERAGE_THRESHOLD := 60
 
-.PHONY: build test lint cross-compile license-check docker clean
+.PHONY: build test lint test-coverage verify release license-check docker clean
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o bin/$(BINARY) ./cmd/md2confl
@@ -13,16 +13,21 @@ test:
 	go test -race ./...
 
 lint:
-	go vet ./...
+	golangci-lint run ./...
 
-cross-compile:
-	@for platform in $(PLATFORMS); do \
-		GOOS=$${platform%/*} GOARCH=$${platform#*/} \
-		go build -ldflags "$(LDFLAGS)" \
-		-o bin/$(BINARY)-$${platform%/*}-$${platform#*/}$$([ "$${platform%/*}" = "windows" ] && echo ".exe") \
-		./cmd/md2confl; \
-		echo "Built $$platform"; \
-	done
+test-coverage:
+	@go test -race -coverprofile=coverage.out -covermode=atomic ./...
+	@total=$$(go tool cover -func=coverage.out | grep total: | awk '{print $$3}' | sed 's/%//'); \
+	echo "Coverage: $${total}%"; \
+	threshold=$(COVERAGE_THRESHOLD); \
+	if [ "$$(echo "$$total < $$threshold" | bc -l)" -eq 1 ]; then \
+		echo "FAIL: coverage $${total}% < $${threshold}%"; exit 1; \
+	fi
+
+verify: lint test-coverage
+
+release:
+	goreleaser release --snapshot --clean
 
 license-check:
 	@fail=0; \
@@ -39,4 +44,4 @@ docker:
 	docker build -t md2confl:$(VERSION) .
 
 clean:
-	rm -rf bin/
+	rm -rf bin/ dist/ coverage.out

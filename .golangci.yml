@@ -1,0 +1,29 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+    - bodyclose
+    - errorlint
+    - misspell
+  settings:
+    errcheck:
+      exclude-functions:
+        - (io.Writer).Write
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (*encoding/json.Encoder).Encode
+        - (*os.File).Close
+        - (io.ReadCloser).Close
+        - os.Remove
+
+issues:
+  exclude-dirs:
+    - bin
+    - dist
+    - testdata

@@ -90,16 +90,6 @@ make build
 
 O `make build` injeta a versão via ldflags a partir de `git describe`, então o binário reporta a tag/commit correto com `--version`.
 
-### Cross-compilation
-
-```bash
-make cross-compile
-# gera binários em bin/ para:
-#   linux/amd64, linux/arm64
-#   darwin/amd64, darwin/arm64
-#   windows/amd64
-```
-
 ### Via Docker (recomendado para Mermaid)
 
 A imagem Docker inclui `md2confl` + Node.js + Chromium + `mmdc`, sem necessidade de instalar nada além do Docker:
@@ -622,6 +612,8 @@ Caminhos relativos são resolvidos a partir do diretório do arquivo Markdown. I
 
 - Go 1.25+
 - Make (opcional, para usar os targets)
+- [golangci-lint](https://golangci-lint.run/) v2+ (para `make lint` / `make verify`)
+- [GoReleaser](https://goreleaser.com/) v2+ (para `make release`)
 - `mmdc` ([@mermaid-js/mermaid-cli](https://github.com/mermaid-js/mermaid-cli)) — necessário apenas para publish com blocos mermaid. Instale via `npm install -g @mermaid-js/mermaid-cli` ou use a imagem Docker que já inclui tudo.
 - Docker (opcional, para build da imagem ou uso via `docker run`)
 
@@ -630,11 +622,13 @@ Caminhos relativos são resolvidos a partir do diretório do arquivo Markdown. I
 ```bash
 make build          # Compila bin/md2confl com versão via git describe
 make test           # go test -race ./...
-make lint           # go vet ./...
-make cross-compile  # Binários para 5 plataformas (linux/darwin/windows × amd64/arm64)
+make lint           # golangci-lint run ./...
+make test-coverage  # Testes com race detector + enforcement de cobertura mínima
+make verify         # lint + test-coverage (usado no CI)
+make release        # goreleaser snapshot local (gera binários em dist/)
 make docker         # Build da imagem Docker com Node.js + Chromium + mmdc
 make license-check  # Verifica que todo .go tem header SPDX Apache-2.0
-make clean          # Remove bin/
+make clean          # Remove bin/, dist/, coverage.out
 ```
 
 ### Testes

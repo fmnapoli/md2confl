@@ -326,7 +326,9 @@ func (c *Client) UploadAttachment(pageID, filePath string) (string, error) {
 	if _, err := io.Copy(part, file); err != nil {
 		return "", err
 	}
-	writer.Close()
+	if err := writer.Close(); err != nil {
+		return "", fmt.Errorf("closing multipart writer: %w", err)
+	}
 
 	baseURL := strings.TrimRight(c.config.BaseURL, "/")
 	url := fmt.Sprintf("%s/wiki/rest/api/content/%s/child/attachment", baseURL, pageID)

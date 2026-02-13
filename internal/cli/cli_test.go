@@ -6,12 +6,15 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/fmnapoli/md2confl/adf"
+	"github.com/fmnapoli/md2confl/confluence"
 )
 
 func TestExtractPageID(t *testing.T) {
@@ -334,11 +337,22 @@ func TestRun_PublishMissingRequiredFlags(t *testing.T) {
 func TestBuildDirTree(t *testing.T) {
 	dir := t.TempDir()
 
-	os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Root\n"), 0644)
-	os.WriteFile(filepath.Join(dir, "setup.md"), []byte("# Setup\n"), 0644)
-	os.MkdirAll(filepath.Join(dir, "guides"), 0755)
-	os.WriteFile(filepath.Join(dir, "guides", "README.md"), []byte("# Guides\n"), 0644)
-	os.WriteFile(filepath.Join(dir, "guides", "intro.md"), []byte("# Introduction\n"), 0644)
+	for _, f := range []struct {
+		path    string
+		content string
+	}{
+		{filepath.Join(dir, "README.md"), "# Root\n"},
+		{filepath.Join(dir, "setup.md"), "# Setup\n"},
+		{filepath.Join(dir, "guides", "README.md"), "# Guides\n"},
+		{filepath.Join(dir, "guides", "intro.md"), "# Introduction\n"},
+	} {
+		if err := os.MkdirAll(filepath.Dir(f.path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(f.path, []byte(f.content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	tree, err := buildDirTree(dir)
 	if err != nil {
@@ -491,8 +505,12 @@ func TestPatchMermaidBlock(t *testing.T) {
 
 func TestRun_DirDryRun(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "doc1.md"), []byte("# Doc 1\n\nHello\n"), 0644)
-	os.WriteFile(filepath.Join(dir, "doc2.md"), []byte("# Doc 2\n\nWorld\n"), 0644)
+	if err := os.WriteFile(filepath.Join(dir, "doc1.md"), []byte("# Doc 1\n\nHello\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "doc2.md"), []byte("# Doc 2\n\nWorld\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	var stdout, stderr bytes.Buffer
 	code := Run([]string{"--input", dir, "--dry-run"}, "test", &stdout, &stderr)
@@ -503,5 +521,305 @@ func TestRun_DirDryRun(t *testing.T) {
 	output := stdout.String()
 	if !strings.Contains(output, `"type": "doc"`) {
 		t.Errorf("expected ADF output, got %q", output)
+	}
+}
+
+func TestWrapConfluenceError_APIError(t *testing.T) {
+	app := &appEnv{}
+	original := &confluence.APIError{
+		Category:   confluence.ErrCategoryAuth,
+		StatusCode: 401,
+		Message:    "authentication failed",
+		Hint:       "check token",
+	}
+
+	err := app.wrapConfluenceError(original)
+	var ae *apiError
+	if !errors.As(err, &ae) {
+		t.Fatalf("expected *apiError, got %T", err)
+	}
+	if ae.exitCode != 2 {
+		t.Errorf("expected exit code 2, got %d", ae.exitCode)
+	}
+	if ae.hint != "check token" {
+		t.Errorf("expected hint 'check token', got %q", ae.hint)
+	}
+}
+
+func TestWrapConfluenceError_GenericError(t *testing.T) {
+	app := &appEnv{}
+	err := app.wrapConfluenceError(fmt.Errorf("network timeout"))
+
+	var ae *apiError
+	if !errors.As(err, &ae) {
+		t.Fatalf("expected *apiError, got %T", err)
+	}
+	if ae.exitCode != 2 {
+		t.Errorf("expected exit code 2, got %d", ae.exitCode)
+	}
+	if ae.message != "network timeout" {
+		t.Errorf("expected message 'network timeout', got %q", ae.message)
+	}
+}
+
+func TestWritePageIDMarker_NewMarker(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.md")
+	source := []byte("# Title\n\nContent\n")
+	if err := os.WriteFile(path, source, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &appEnv{}
+	if err := app.writePageIDMarker(path, source, "12345"); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(data), "<!-- confluence-page-id: 12345 -->") {
+		t.Errorf("expected marker at top, got %q", string(data[:60]))
+	}
+}
+
+func TestWritePageIDMarker_ReplaceExisting(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.md")
+	source := []byte("<!-- confluence-page-id: 99999 -->\n# Title\n")
+	if err := os.WriteFile(path, source, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &appEnv{}
+	if err := app.writePageIDMarker(path, source, "12345"); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "12345") {
+		t.Errorf("expected updated marker, got %q", string(data))
+	}
+	if strings.Contains(string(data), "99999") {
+		t.Errorf("old marker should be replaced")
+	}
+}
+
+func TestDeriveTitleFromSource(t *testing.T) {
+	app := &appEnv{}
+
+	tests := []struct {
+		name     string
+		source   string
+		fallback string
+		want     string
+	}{
+		{"h1 heading", "# My Title\nContent", "fallback", "My Title"},
+		{"no heading", "Just content\nNo heading", "fallback", "fallback"},
+		{"h2 ignored", "## Not H1\nContent", "fallback", "fallback"},
+		{"marker before h1", "<!-- confluence-page-id: 123 -->\n# Real Title", "fallback", "Real Title"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := app.deriveTitleFromSource([]byte(tt.source), tt.fallback)
+			if got != tt.want {
+				t.Errorf("expected %q, got %q", tt.want, got)
+			}
+		})
+	}
+}
+
+func TestRun_InputOutputJSON(t *testing.T) {
+	dir := t.TempDir()
+	inputFile := filepath.Join(dir, "test.md")
+	outputFile := filepath.Join(dir, "test.json")
+	if err := os.WriteFile(inputFile, []byte("# Hello\n\nWorld.\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"--input", inputFile, "--output", outputFile, "--json"}, "test", &stdout, &stderr)
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d; stderr: %s", code, stderr.String())
+	}
+
+	var result Result
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("invalid JSON output: %v\nOutput: %s", err, stdout.String())
+	}
+	if result.Status != "success" {
+		t.Errorf("expected status success, got %q", result.Status)
+	}
+}
+
+func TestRun_ErrorJSON(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"--input", "/nonexistent/file.md", "--json"}, "test", &stdout, &stderr)
+	if code != 1 {
+		t.Errorf("expected exit code 1, got %d", code)
+	}
+
+	var result ErrorResult
+	if err := json.Unmarshal(stderr.Bytes(), &result); err != nil {
+		t.Fatalf("invalid JSON error output: %v\nOutput: %s", err, stderr.String())
+	}
+	if result.Status != "error" {
+		t.Errorf("expected status error, got %q", result.Status)
+	}
+}
+
+func TestRun_DirWithSubdirs(t *testing.T) {
+	dir := t.TempDir()
+	for _, f := range []struct {
+		path    string
+		content string
+	}{
+		{filepath.Join(dir, "README.md"), "# Root\n\nRoot content\n"},
+		{filepath.Join(dir, "setup.md"), "# Setup\n\nSetup content\n"},
+		{filepath.Join(dir, "sub", "README.md"), "# Sub\n\nSub content\n"},
+	} {
+		if err := os.MkdirAll(filepath.Dir(f.path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(f.path, []byte(f.content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"--input", dir}, "test", &stdout, &stderr)
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d; stderr: %s", code, stderr.String())
+	}
+
+	output := stdout.String()
+	// Should output 3 ADF documents (README, setup, sub/README)
+	count := strings.Count(output, `"type": "doc"`)
+	if count != 3 {
+		t.Errorf("expected 3 ADF documents, got %d", count)
+	}
+}
+
+func TestRun_DefaultStdout(t *testing.T) {
+	dir := t.TempDir()
+	inputFile := filepath.Join(dir, "test.md")
+	if err := os.WriteFile(inputFile, []byte("# Hello\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"--input", inputFile}, "test", &stdout, &stderr)
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d; stderr: %s", code, stderr.String())
+	}
+
+	var doc map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+		t.Fatalf("default output is not valid JSON: %v", err)
+	}
+}
+
+func TestApiError_Error(t *testing.T) {
+	err := &apiError{message: "test error", hint: "try again", exitCode: 2}
+	if err.Error() != "test error" {
+		t.Errorf("expected 'test error', got %q", err.Error())
+	}
+}
+
+func TestRun_DryRunWithPublishFlagsJSON(t *testing.T) {
+	dir := t.TempDir()
+	inputFile := filepath.Join(dir, "test.md")
+	if err := os.WriteFile(inputFile, []byte("# Hello\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{
+		"--input", inputFile,
+		"--dry-run",
+		"--publish",
+		"--url", "https://test.atlassian.net",
+		"--space", "TEST",
+		"--email", "test@example.com",
+		"--token", "fake-token",
+		"--title", "My Page",
+		"--parent-id", "999",
+		"--json",
+	}, "test", &stdout, &stderr)
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d; stderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "Parent: 999") {
+		t.Errorf("expected parent in simulation, got %q", stderr.String())
+	}
+}
+
+func TestRun_MissingInput(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"--publish"}, "test", &stdout, &stderr)
+	if code != 1 {
+		t.Errorf("expected exit code 1, got %d", code)
+	}
+}
+
+func TestRun_EnvVarCredentials(t *testing.T) {
+	dir := t.TempDir()
+	inputFile := filepath.Join(dir, "test.md")
+	if err := os.WriteFile(inputFile, []byte("# Hello\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("CONFLUENCE_URL", "https://env.atlassian.net")
+	t.Setenv("CONFLUENCE_EMAIL", "env@example.com")
+	t.Setenv("CONFLUENCE_TOKEN", "env-token")
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{
+		"--input", inputFile,
+		"--dry-run",
+		"--publish",
+		"--space", "TEST",
+	}, "test", &stdout, &stderr)
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d; stderr: %s", code, stderr.String())
+	}
+}
+
+func TestRun_PublishNonHTTPS(t *testing.T) {
+	dir := t.TempDir()
+	inputFile := filepath.Join(dir, "test.md")
+	if err := os.WriteFile(inputFile, []byte("# Hello\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{
+		"--input", inputFile,
+		"--publish",
+		"--url", "http://insecure.example.com",
+		"--space", "TEST",
+		"--email", "test@example.com",
+		"--token", "fake",
+	}, "test", &stdout, &stderr)
+	if code != 1 {
+		t.Errorf("expected exit code 1, got %d", code)
+	}
+}
+
+func TestBuildDirTree_NotADir(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "file.txt")
+	if err := os.WriteFile(f, []byte("not a dir"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := buildDirTree(f)
+	if err == nil {
+		t.Fatal("expected error for non-directory")
 	}
 }

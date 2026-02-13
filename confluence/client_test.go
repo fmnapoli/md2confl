@@ -5,6 +5,7 @@ package confluence
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -69,8 +70,8 @@ func TestResolveSpaceID_NotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing space")
 	}
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("expected APIError, got %T", err)
 	}
 	if apiErr.Category != ErrCategoryNotFound {
@@ -86,7 +87,7 @@ func TestCreatePage(t *testing.T) {
 
 		body, _ := io.ReadAll(r.Body)
 		var req map[string]any
-		json.Unmarshal(body, &req)
+		_ = json.Unmarshal(body, &req)
 
 		if req["spaceId"] != "123" {
 			t.Errorf("unexpected spaceId: %v", req["spaceId"])
@@ -128,7 +129,7 @@ func TestCreatePage_WithParent(t *testing.T) {
 	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var req map[string]any
-		json.Unmarshal(body, &req)
+		_ = json.Unmarshal(body, &req)
 
 		if req["parentId"] != "888" {
 			t.Errorf("expected parentId 888, got %v", req["parentId"])
@@ -189,7 +190,7 @@ func TestUpdatePage(t *testing.T) {
 
 		body, _ := io.ReadAll(r.Body)
 		var req map[string]any
-		json.Unmarshal(body, &req)
+		_ = json.Unmarshal(body, &req)
 
 		version := req["version"].(map[string]any)
 		if version["number"] != float64(4) {
@@ -260,7 +261,7 @@ func TestFindByTitle_NotFound(t *testing.T) {
 func TestAuthError(t *testing.T) {
 	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(401)
-		w.Write([]byte("Unauthorized"))
+		_, _ = w.Write([]byte("Unauthorized"))
 	})
 	defer ts.Close()
 
@@ -268,8 +269,8 @@ func TestAuthError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("expected APIError, got %T", err)
 	}
 	if apiErr.Category != ErrCategoryAuth {
@@ -287,13 +288,15 @@ func TestAuthHeader(t *testing.T) {
 	})
 	defer ts.Close()
 
-	client.ResolveSpaceID("X")
+	_, _ = client.ResolveSpaceID("X")
 }
 
 func TestUploadAttachment(t *testing.T) {
 	dir := t.TempDir()
 	testFile := filepath.Join(dir, "test.png")
-	os.WriteFile(testFile, []byte("fake-png-data"), 0644)
+	if err := os.WriteFile(testFile, []byte("fake-png-data"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {

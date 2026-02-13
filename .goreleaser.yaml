@@ -1,0 +1,41 @@
+version: 2
+project_name: md2confl
+
+builds:
+  - main: ./cmd/md2confl
+    binary: md2confl
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w -X main.Version={{.Version}}
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files: [LICENSE, README.md]
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude: ['^docs:', '^test:', '^chore:', 'Merge']
+
+release:
+  github:
+    owner: fmnapoli
+    name: md2confl
+  header: |
+    ## md2confl {{ .Tag }}
+
+    Docker image com suporte a Mermaid:
+    ```
+    docker pull fmnapoli/md2confl:{{ .Version }}
+    ```
