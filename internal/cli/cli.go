@@ -885,7 +885,7 @@ func extractCodeBlockText(node *adf.Node) string {
 func patchMermaidBlock(block mermaidBlock, svgPath string) {
 	(*block.parent)[block.index] = adf.Node{
 		Type:  "mediaSingle",
-		Attrs: map[string]any{"layout": "center"},
+		Attrs: map[string]any{"layout": "wide"},
 		Content: []adf.Node{
 			{
 				Type: "media",

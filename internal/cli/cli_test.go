@@ -488,8 +488,8 @@ func TestPatchMermaidBlock(t *testing.T) {
 	if node.Type != "mediaSingle" {
 		t.Fatalf("expected mediaSingle, got %q", node.Type)
 	}
-	if node.Attrs["layout"] != "center" {
-		t.Errorf("expected layout 'center', got %v", node.Attrs["layout"])
+	if node.Attrs["layout"] != "wide" {
+		t.Errorf("expected layout 'wide', got %v", node.Attrs["layout"])
 	}
 	if len(node.Content) != 1 {
 		t.Fatalf("expected 1 child, got %d", len(node.Content))
