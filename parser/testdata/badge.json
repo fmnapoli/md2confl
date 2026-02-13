@@ -1,0 +1,121 @@
+{
+  "version": 1,
+  "type": "doc",
+  "content": [
+    {
+      "type": "heading",
+      "attrs": {
+        "level": 1
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "Badge"
+        },
+        {
+          "type": "text",
+          "text": " Test"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "mediaInline",
+          "attrs": {
+            "alt": "CI",
+            "type": "external",
+            "url": "https://example.com/badge.svg"
+          },
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "href": "https://example.com/ci"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "A standalone image"
+        },
+        {
+          "type": "text",
+          "text": ":"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "mediaSingle",
+          "attrs": {
+            "layout": "center"
+          },
+          "content": [
+            {
+              "type": "media",
+              "attrs": {
+                "type": "external",
+                "url": "logo.png"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Mixed badge line: "
+        },
+        {
+          "type": "mediaInline",
+          "attrs": {
+            "alt": "Build",
+            "type": "external",
+            "url": "https://example.com/build.svg"
+          },
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "href": "https://example.com/build"
+              }
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": " "
+        },
+        {
+          "type": "mediaInline",
+          "attrs": {
+            "alt": "Coverage",
+            "type": "external",
+            "url": "https://example.com/cov.svg"
+          },
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "href": "https://example.com/cov"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
