@@ -297,7 +297,7 @@ func (app *appEnv) runFile(path string) error {
 	}
 
 	if app.dryRun {
-		return app.handleDryRun(path, adfJSON)
+		return app.handleDryRun(path, adfJSON, doc)
 	}
 
 	if app.output != "" {
@@ -309,10 +309,10 @@ func (app *appEnv) runFile(path string) error {
 	}
 
 	// Default: dry-run behavior when no output/publish specified
-	return app.handleDryRun(path, adfJSON)
+	return app.handleDryRun(path, adfJSON, doc)
 }
 
-func (app *appEnv) handleDryRun(path string, adfJSON []byte) error {
+func (app *appEnv) handleDryRun(path string, adfJSON []byte, doc *adf.Document) error {
 	if app.publish {
 		// Show simulation when publish flags are present
 		title := app.deriveTitle(path, nil)
@@ -325,6 +325,17 @@ func (app *appEnv) handleDryRun(path string, adfJSON []byte) error {
 		fmt.Fprintf(app.stderr, "  URL: %s\n", app.url)
 		fmt.Fprintf(app.stderr, "\n")
 	}
+
+	// Save to docResults for dry-run link preview (config mode)
+	if app.docResults != nil && app.output == "" {
+		absPath, _ := filepath.Abs(path)
+		title := app.deriveTitle(path, nil)
+		app.docResults[absPath] = &docPublishResult{
+			title:    title,
+			finalADF: doc,
+		}
+	}
+
 	fmt.Fprintln(app.stdout, string(adfJSON))
 	return nil
 }
@@ -529,8 +540,8 @@ func (app *appEnv) runDir() error {
 		return fmt.Errorf("scanning directory %q: %w", app.input, err)
 	}
 
-	if !app.publish {
-		// In non-publish mode, convert all files and output ADF
+	if !app.publish || app.dryRun {
+		// In non-publish or dry-run mode, convert all files and output ADF
 		return app.convertDirTree(tree)
 	}
 
@@ -549,7 +560,26 @@ func (app *appEnv) runDir() error {
 		return app.wrapConfluenceError(err)
 	}
 
-	return app.publishDirTree(client, spaceID, app.parentID, tree, true)
+	// When called from config mode, docResults is already initialized by
+	// runDocuments and shared via shallow copy — don't overwrite it.
+	standaloneDir := app.docResults == nil
+	if standaloneDir {
+		app.docResults = make(map[string]*docPublishResult)
+	}
+
+	if err := app.publishDirTree(client, spaceID, app.parentID, tree, true); err != nil {
+		return err
+	}
+
+	// Second pass: resolve inter-document links (only in standalone dir mode;
+	// config mode defers to runDocuments for cross-document resolution).
+	if standaloneDir && len(app.docResults) > 1 {
+		if err := app.resolveInterDocLinksFromResults(); err != nil {
+			return fmt.Errorf("resolving inter-document links: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func buildDirTree(root string) (*DirEntry, error) {
@@ -623,6 +653,7 @@ func (app *appEnv) publishDirTree(client *confluence.Client, spaceID, parentID s
 	var pageContent []byte
 	var pagePath string
 	var pageSource []byte
+	var pageDoc *adf.Document
 
 	if tree.Readme != nil {
 		pagePath = tree.Readme.Path
@@ -631,6 +662,7 @@ func (app *appEnv) publishDirTree(client *confluence.Client, spaceID, parentID s
 		if err != nil {
 			return fmt.Errorf("converting %q: %w", pagePath, err)
 		}
+		pageDoc = doc
 		adfJSON, err := json.MarshalIndent(doc, "", "  ")
 		if err != nil {
 			return fmt.Errorf("marshaling ADF: %w", err)
@@ -660,68 +692,60 @@ func (app *appEnv) publishDirTree(client *confluence.Client, spaceID, parentID s
 	}
 
 	adfStr := string(pageContent)
-	var dirPageID string
+	var dirResult *confluence.PublishResult
 
 	if existingPageID != "" {
 		page, err := client.GetPage(existingPageID)
 		if err != nil {
 			return app.wrapConfluenceError(err)
 		}
-		result, err := client.UpdatePage(existingPageID, title, adfStr, page.Version.Number)
+		dirResult, err = client.UpdatePage(existingPageID, title, adfStr, page.Version.Number)
 		if err != nil {
 			return app.wrapConfluenceError(err)
 		}
-		dirPageID = result.PageID
-		printResult(app.stdout, Result{
-			Status:   "success",
-			PageID:   result.PageID,
-			PageURL:  result.PageURL,
-			Title:    result.Title,
-			SpaceKey: result.SpaceKey,
-			Action:   result.Action,
-			Version:  result.Version,
-		}, app.jsonOutput)
 	} else if app.force {
 		existing, err := client.FindByTitle(spaceID, title)
 		if err != nil {
 			return app.wrapConfluenceError(err)
 		}
 		if existing != nil {
-			result, err := client.UpdatePage(existing.ID, title, adfStr, existing.Version.Number)
+			dirResult, err = client.UpdatePage(existing.ID, title, adfStr, existing.Version.Number)
 			if err != nil {
 				return app.wrapConfluenceError(err)
 			}
-			dirPageID = result.PageID
-			printResult(app.stdout, Result{
-				Status: "success", PageID: result.PageID, PageURL: result.PageURL,
-				Title: result.Title, SpaceKey: result.SpaceKey, Action: result.Action, Version: result.Version,
-			}, app.jsonOutput)
 		} else {
-			result, err := client.CreatePage(spaceID, title, parentID, adfStr)
+			dirResult, err = client.CreatePage(spaceID, title, parentID, adfStr)
 			if err != nil {
 				return app.wrapConfluenceError(err)
 			}
-			dirPageID = result.PageID
-			printResult(app.stdout, Result{
-				Status: "success", PageID: result.PageID, PageURL: result.PageURL,
-				Title: result.Title, SpaceKey: result.SpaceKey, Action: result.Action, Version: result.Version,
-			}, app.jsonOutput)
 		}
 	} else {
-		result, err := client.CreatePage(spaceID, title, parentID, adfStr)
+		var err error
+		dirResult, err = client.CreatePage(spaceID, title, parentID, adfStr)
 		if err != nil {
 			return app.wrapConfluenceError(err)
 		}
-		dirPageID = result.PageID
-		printResult(app.stdout, Result{
-			Status: "success", PageID: result.PageID, PageURL: result.PageURL,
-			Title: result.Title, SpaceKey: result.SpaceKey, Action: result.Action, Version: result.Version,
-		}, app.jsonOutput)
+	}
+
+	printResult(app.stdout, Result{
+		Status: "success", PageID: dirResult.PageID, PageURL: dirResult.PageURL,
+		Title: dirResult.Title, SpaceKey: dirResult.SpaceKey, Action: dirResult.Action, Version: dirResult.Version,
+	}, app.jsonOutput)
+
+	// Save result for inter-document link resolution
+	if app.docResults != nil && pagePath != "" {
+		absPath, _ := filepath.Abs(pagePath)
+		app.docResults[absPath] = &docPublishResult{
+			pageID:   dirResult.PageID,
+			pageURL:  dirResult.PageURL,
+			title:    dirResult.Title,
+			finalADF: pageDoc,
+		}
 	}
 
 	// Write marker for README if requested
-	if app.writeMarker && tree.Readme != nil && dirPageID != "" {
-		if err := app.writePageIDMarker(tree.Readme.Path, tree.Readme.Content, dirPageID); err != nil {
+	if app.writeMarker && tree.Readme != nil && dirResult.PageID != "" {
+		if err := app.writePageIDMarker(tree.Readme.Path, tree.Readme.Content, dirResult.PageID); err != nil {
 			fmt.Fprintf(app.stderr, "Warning: could not write page-id marker: %v\n", err)
 		}
 	}
@@ -740,39 +764,69 @@ func (app *appEnv) publishDirTree(client *confluence.Client, spaceID, parentID s
 		childPageID := extractPageID(f.Content)
 		childADF := string(adfJSON)
 
+		var childResult *confluence.PublishResult
 		if childPageID != "" {
 			page, err := client.GetPage(childPageID)
 			if err != nil {
 				return app.wrapConfluenceError(err)
 			}
-			result, err := client.UpdatePage(childPageID, childTitle, childADF, page.Version.Number)
+			childResult, err = client.UpdatePage(childPageID, childTitle, childADF, page.Version.Number)
 			if err != nil {
 				return app.wrapConfluenceError(err)
 			}
-			printResult(app.stdout, Result{
-				Status: "success", PageID: result.PageID, PageURL: result.PageURL,
-				Title: result.Title, SpaceKey: result.SpaceKey, Action: result.Action, Version: result.Version,
-			}, app.jsonOutput)
-		} else {
-			result, err := client.CreatePage(spaceID, childTitle, dirPageID, childADF)
+		} else if app.force {
+			existing, err := client.FindByTitle(spaceID, childTitle)
 			if err != nil {
 				return app.wrapConfluenceError(err)
 			}
-			printResult(app.stdout, Result{
-				Status: "success", PageID: result.PageID, PageURL: result.PageURL,
-				Title: result.Title, SpaceKey: result.SpaceKey, Action: result.Action, Version: result.Version,
-			}, app.jsonOutput)
+			if existing != nil {
+				childResult, err = client.UpdatePage(existing.ID, childTitle, childADF, existing.Version.Number)
+				if err != nil {
+					return app.wrapConfluenceError(err)
+				}
+			} else {
+				childResult, err = client.CreatePage(spaceID, childTitle, dirResult.PageID, childADF)
+				if err != nil {
+					return app.wrapConfluenceError(err)
+				}
+			}
 			if app.writeMarker {
-				if err := app.writePageIDMarker(f.Path, f.Content, result.PageID); err != nil {
+				if err := app.writePageIDMarker(f.Path, f.Content, childResult.PageID); err != nil {
 					fmt.Fprintf(app.stderr, "Warning: could not write page-id marker: %v\n", err)
 				}
+			}
+		} else {
+			childResult, err = client.CreatePage(spaceID, childTitle, dirResult.PageID, childADF)
+			if err != nil {
+				return app.wrapConfluenceError(err)
+			}
+			if app.writeMarker {
+				if err := app.writePageIDMarker(f.Path, f.Content, childResult.PageID); err != nil {
+					fmt.Fprintf(app.stderr, "Warning: could not write page-id marker: %v\n", err)
+				}
+			}
+		}
+
+		printResult(app.stdout, Result{
+			Status: "success", PageID: childResult.PageID, PageURL: childResult.PageURL,
+			Title: childResult.Title, SpaceKey: childResult.SpaceKey, Action: childResult.Action, Version: childResult.Version,
+		}, app.jsonOutput)
+
+		// Save result for inter-document link resolution
+		if app.docResults != nil {
+			absPath, _ := filepath.Abs(f.Path)
+			app.docResults[absPath] = &docPublishResult{
+				pageID:   childResult.PageID,
+				pageURL:  childResult.PageURL,
+				title:    childTitle,
+				finalADF: doc,
 			}
 		}
 	}
 
 	// Recurse into subdirectories
 	for _, child := range tree.Children {
-		if err := app.publishDirTree(client, spaceID, dirPageID, &child, false); err != nil {
+		if err := app.publishDirTree(client, spaceID, dirResult.PageID, &child, false); err != nil {
 			return err
 		}
 	}
@@ -969,10 +1023,9 @@ func countMermaidSVGs(doc *adf.Document) int {
 	return count
 }
 
-// resolveInterDocLinks performs a second pass over published documents to
-// replace relative Markdown links with Confluence page URLs.
-func (app *appEnv) resolveInterDocLinks(docs []DocConfig) error {
-	// Build linkMap: abs input path → Confluence page URL
+// resolveInterDocLinksFromResults performs a second pass over all docResults
+// to replace relative Markdown links with Confluence page URLs.
+func (app *appEnv) resolveInterDocLinksFromResults() error {
 	linkMap := make(map[string]string, len(app.docResults))
 	for absPath, res := range app.docResults {
 		linkMap[absPath] = res.pageURL
@@ -988,36 +1041,108 @@ func (app *appEnv) resolveInterDocLinks(docs []DocConfig) error {
 		return err
 	}
 
-	for _, doc := range docs {
-		// Skip convert-only documents
-		if doc.Output != "" {
-			continue
-		}
-
-		absPath, _ := filepath.Abs(doc.Input)
-		res, ok := app.docResults[absPath]
-		if !ok || res.finalADF == nil {
+	for absPath, res := range app.docResults {
+		if res.finalADF == nil {
 			continue
 		}
 
 		baseDir := filepath.Dir(absPath)
-		if !patchDocLinks(res.finalADF, baseDir, linkMap) {
+		count := patchDocLinks(res.finalADF, baseDir, linkMap)
+		if count == 0 {
 			continue
 		}
 
 		patchedJSON, err := json.MarshalIndent(res.finalADF, "", "  ")
 		if err != nil {
-			return fmt.Errorf("marshaling patched ADF for %q: %w", doc.Input, err)
+			return fmt.Errorf("marshaling patched ADF for %q: %w", absPath, err)
 		}
 
 		if err := updatePageWithRetry(client, res.pageID, res.title, string(patchedJSON)); err != nil {
 			return fmt.Errorf("updating page %s with resolved links: %w", res.pageID, err)
 		}
 
-		fmt.Fprintf(app.stderr, "Resolved inter-document links in %q\n", doc.Input)
+		fmt.Fprintf(app.stderr, "Resolved %d inter-document link(s) in %q\n", count, filepath.Base(absPath))
 	}
 
 	return nil
+}
+
+// previewInterDocLinksFromResults performs a read-only scan of all docResults
+// and reports how many inter-document links would be resolved (dry-run mode).
+// Unlike previewInterDocLinks, this iterates over all results including files
+// from directory inputs.
+func (app *appEnv) previewInterDocLinksFromResults() {
+	linkMap := make(map[string]string, len(app.docResults))
+	for absPath, res := range app.docResults {
+		url := res.pageURL
+		if url == "" {
+			url = fmt.Sprintf("(page %q)", res.title)
+		}
+		linkMap[absPath] = url
+	}
+
+	for absPath, res := range app.docResults {
+		if res.finalADF == nil {
+			continue
+		}
+
+		baseDir := filepath.Dir(absPath)
+		count := countResolvableLinks(res.finalADF, baseDir, linkMap)
+		if count > 0 {
+			fmt.Fprintf(app.stderr, "Dry-run: would resolve %d inter-document link(s) in %q\n", count, filepath.Base(absPath))
+		}
+	}
+}
+
+// countResolvableLinks counts how many relative links in the ADF document
+// could be resolved against the linkMap, without modifying the tree.
+func countResolvableLinks(doc *adf.Document, baseDir string, linkMap map[string]string) int {
+	count := 0
+	for i := range doc.Content {
+		count += countNodeResolvableLinks(&doc.Content[i], baseDir, linkMap)
+	}
+	return count
+}
+
+func countNodeResolvableLinks(node *adf.Node, baseDir string, linkMap map[string]string) int {
+	count := 0
+
+	for _, mark := range node.Marks {
+		if mark.Type != "link" {
+			continue
+		}
+		href, ok := mark.Attrs["href"].(string)
+		if !ok || href == "" {
+			continue
+		}
+		if strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") || strings.HasPrefix(href, "//") {
+			continue
+		}
+
+		cleanHref := href
+		if idx := strings.Index(cleanHref, "#"); idx >= 0 {
+			cleanHref = cleanHref[:idx]
+		}
+		if cleanHref == "" {
+			continue
+		}
+
+		resolved := filepath.Join(baseDir, cleanHref)
+		absResolved, err := filepath.Abs(resolved)
+		if err != nil {
+			continue
+		}
+
+		if _, found := linkMap[absResolved]; found {
+			count++
+		}
+	}
+
+	for i := range node.Content {
+		count += countNodeResolvableLinks(&node.Content[i], baseDir, linkMap)
+	}
+
+	return count
 }
 
 // updatePageWithRetry fetches the current page version and updates it,
@@ -1042,20 +1167,18 @@ func updatePageWithRetry(client *confluence.Client, pageID, title, adfJSON strin
 }
 
 // patchDocLinks walks the ADF tree and replaces relative Markdown link hrefs
-// with Confluence page URLs using the provided linkMap. Returns true if any
-// links were patched.
-func patchDocLinks(doc *adf.Document, baseDir string, linkMap map[string]string) bool {
-	patched := false
+// with Confluence page URLs using the provided linkMap. Returns the number of
+// links patched.
+func patchDocLinks(doc *adf.Document, baseDir string, linkMap map[string]string) int {
+	count := 0
 	for i := range doc.Content {
-		if patchNodeLinks(&doc.Content[i], baseDir, linkMap) {
-			patched = true
-		}
+		count += patchNodeLinks(&doc.Content[i], baseDir, linkMap)
 	}
-	return patched
+	return count
 }
 
-func patchNodeLinks(node *adf.Node, baseDir string, linkMap map[string]string) bool {
-	patched := false
+func patchNodeLinks(node *adf.Node, baseDir string, linkMap map[string]string) int {
+	count := 0
 
 	// Check marks for link references
 	for i := range node.Marks {
@@ -1071,9 +1194,11 @@ func patchNodeLinks(node *adf.Node, baseDir string, linkMap map[string]string) b
 			continue
 		}
 
-		// Strip fragment for matching
+		// Extract fragment before stripping
 		cleanHref := href
+		fragment := ""
 		if idx := strings.Index(cleanHref, "#"); idx >= 0 {
+			fragment = cleanHref[idx:] // includes the '#'
 			cleanHref = cleanHref[:idx]
 		}
 		if cleanHref == "" {
@@ -1088,17 +1213,15 @@ func patchNodeLinks(node *adf.Node, baseDir string, linkMap map[string]string) b
 		}
 
 		if pageURL, found := linkMap[absResolved]; found {
-			node.Marks[i].Attrs["href"] = pageURL
-			patched = true
+			node.Marks[i].Attrs["href"] = pageURL + fragment
+			count++
 		}
 	}
 
 	// Recurse into children
 	for i := range node.Content {
-		if patchNodeLinks(&node.Content[i], baseDir, linkMap) {
-			patched = true
-		}
+		count += patchNodeLinks(&node.Content[i], baseDir, linkMap)
 	}
 
-	return patched
+	return count
 }

@@ -9,23 +9,5 @@ documents:
   - input: README.md
     title: "md2confl"
 
-  - input: docs/quickstart.md
-    parent-id: "589826"
-
-  - input: docs/instalacao.md
-    parent-id: "589826"
-
-  - input: docs/referencia.md
-    parent-id: "589826"
-
-  - input: docs/configuracao.md
-    parent-id: "589826"
-
-  - input: docs/publicacao.md
-    parent-id: "589826"
-
-  - input: docs/desenvolvimento.md
-    parent-id: "589826"
-
-  - input: docs/ci-cd.md
+  - input: docs/
     parent-id: "589826"

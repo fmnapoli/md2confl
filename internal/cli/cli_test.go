@@ -1109,53 +1109,60 @@ func TestPatchDocLinks(t *testing.T) {
 	}
 
 	tests := []struct {
-		name      string
-		href      string
-		baseDir   string
-		expectURL string
-		patched   bool
+		name       string
+		href       string
+		baseDir    string
+		expectURL  string
+		patchCount int
 	}{
 		{
-			name:      "relative link resolved",
-			href:      "instalacao.md",
-			baseDir:   "/docs",
-			expectURL: "https://site.atlassian.net/wiki/spaces/DEV/pages/123/Instalacao",
-			patched:   true,
+			name:       "relative link resolved",
+			href:       "instalacao.md",
+			baseDir:    "/docs",
+			expectURL:  "https://site.atlassian.net/wiki/spaces/DEV/pages/123/Instalacao",
+			patchCount: 1,
 		},
 		{
-			name:      "relative link with fragment",
-			href:      "instalacao.md#secao",
-			baseDir:   "/docs",
-			expectURL: "https://site.atlassian.net/wiki/spaces/DEV/pages/123/Instalacao",
-			patched:   true,
+			name:       "relative link with fragment",
+			href:       "instalacao.md#secao",
+			baseDir:    "/docs",
+			expectURL:  "https://site.atlassian.net/wiki/spaces/DEV/pages/123/Instalacao#secao",
+			patchCount: 1,
 		},
 		{
-			name:      "absolute URL ignored",
-			href:      "https://example.com/page",
-			baseDir:   "/docs",
-			expectURL: "https://example.com/page",
-			patched:   false,
+			name:       "absolute URL ignored",
+			href:       "https://example.com/page",
+			baseDir:    "/docs",
+			expectURL:  "https://example.com/page",
+			patchCount: 0,
 		},
 		{
-			name:      "link to file not in config ignored",
-			href:      "unknown.md",
-			baseDir:   "/docs",
-			expectURL: "unknown.md",
-			patched:   false,
+			name:       "link to file not in config ignored",
+			href:       "unknown.md",
+			baseDir:    "/docs",
+			expectURL:  "unknown.md",
+			patchCount: 0,
 		},
 		{
-			name:      "fragment-only link ignored",
-			href:      "#section",
-			baseDir:   "/docs",
-			expectURL: "#section",
-			patched:   false,
+			name:       "fragment-only link ignored",
+			href:       "#section",
+			baseDir:    "/docs",
+			expectURL:  "#section",
+			patchCount: 0,
 		},
 		{
-			name:      "subdirectory relative link",
-			href:      "../docs/ci-cd.md",
-			baseDir:   "/other",
-			expectURL: "https://site.atlassian.net/wiki/spaces/DEV/pages/456/CI-CD",
-			patched:   true,
+			name:       "subdirectory relative link",
+			href:       "../docs/ci-cd.md",
+			baseDir:    "/other",
+			expectURL:  "https://site.atlassian.net/wiki/spaces/DEV/pages/456/CI-CD",
+			patchCount: 1,
+		},
+		{
+			name:       "fragment preserved on different doc",
+			href:       "ci-cd.md#pipeline",
+			baseDir:    "/docs",
+			expectURL:  "https://site.atlassian.net/wiki/spaces/DEV/pages/456/CI-CD#pipeline",
+			patchCount: 1,
 		},
 	}
 
@@ -1181,8 +1188,8 @@ func TestPatchDocLinks(t *testing.T) {
 			}
 
 			got := patchDocLinks(doc, tt.baseDir, linkMap)
-			if got != tt.patched {
-				t.Errorf("patchDocLinks returned %v, want %v", got, tt.patched)
+			if got != tt.patchCount {
+				t.Errorf("patchDocLinks returned %d, want %d", got, tt.patchCount)
 			}
 
 			href := doc.Content[0].Content[0].Marks[0].Attrs["href"].(string)
@@ -1229,9 +1236,9 @@ func TestPatchDocLinks_MultipleLinks(t *testing.T) {
 		},
 	}
 
-	patched := patchDocLinks(doc, "/docs", linkMap)
-	if !patched {
-		t.Error("expected patchDocLinks to return true")
+	count := patchDocLinks(doc, "/docs", linkMap)
+	if count != 2 {
+		t.Errorf("expected patchDocLinks to return 2, got %d", count)
 	}
 
 	hrefA := doc.Content[0].Content[0].Marks[0].Attrs["href"].(string)
@@ -1278,9 +1285,9 @@ func TestPatchDocLinks_NestedContent(t *testing.T) {
 		},
 	}
 
-	patched := patchDocLinks(doc, "/docs", linkMap)
-	if !patched {
-		t.Error("expected nested link to be patched")
+	count := patchDocLinks(doc, "/docs", linkMap)
+	if count != 1 {
+		t.Errorf("expected patchDocLinks to return 1, got %d", count)
 	}
 
 	href := doc.Content[0].Content[0].Content[0].Content[0].Marks[0].Attrs["href"].(string)
@@ -1385,9 +1392,9 @@ func TestResolveInterDocLinks(t *testing.T) {
 	}
 
 	baseDir := filepath.Dir(doc1Path)
-	patched := patchDocLinks(doc1ADF, baseDir, linkMap)
-	if !patched {
-		t.Fatal("expected doc1 links to be patched")
+	count := patchDocLinks(doc1ADF, baseDir, linkMap)
+	if count != 1 {
+		t.Fatalf("expected 1 link patched in doc1, got %d", count)
 	}
 
 	href := doc1ADF.Content[0].Content[0].Marks[0].Attrs["href"].(string)
@@ -1396,9 +1403,9 @@ func TestResolveInterDocLinks(t *testing.T) {
 	}
 
 	// doc2 should NOT be patched (no inter-doc links)
-	patched = patchDocLinks(doc2ADF, baseDir, linkMap)
-	if patched {
-		t.Error("doc2 should not have inter-doc links")
+	count = patchDocLinks(doc2ADF, baseDir, linkMap)
+	if count != 0 {
+		t.Errorf("doc2 should not have inter-doc links, got %d", count)
 	}
 }
 
@@ -1428,5 +1435,93 @@ func TestRun_NoConfigBackwardCompat(t *testing.T) {
 	var doc map[string]any
 	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
 		t.Fatalf("default output is not valid JSON: %v", err)
+	}
+}
+
+func TestCountResolvableLinks(t *testing.T) {
+	linkMap := map[string]string{
+		"/docs/target.md": "https://site.atlassian.net/wiki/pages/1/Target",
+		"/docs/other.md":  "https://site.atlassian.net/wiki/pages/2/Other",
+	}
+
+	doc := &adf.Document{
+		Version: 1,
+		Type:    "doc",
+		Content: []adf.Node{
+			{
+				Type: "paragraph",
+				Content: []adf.Node{
+					{
+						Type: "text",
+						Text: "Link 1",
+						Marks: []adf.Mark{
+							{Type: "link", Attrs: map[string]any{"href": "target.md"}},
+						},
+					},
+					{
+						Type: "text",
+						Text: "Link 2",
+						Marks: []adf.Mark{
+							{Type: "link", Attrs: map[string]any{"href": "other.md#section"}},
+						},
+					},
+					{
+						Type: "text",
+						Text: "External",
+						Marks: []adf.Mark{
+							{Type: "link", Attrs: map[string]any{"href": "https://example.com"}},
+						},
+					},
+					{
+						Type: "text",
+						Text: "Unknown",
+						Marks: []adf.Mark{
+							{Type: "link", Attrs: map[string]any{"href": "unknown.md"}},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	count := countResolvableLinks(doc, "/docs", linkMap)
+	if count != 2 {
+		t.Errorf("expected 2 resolvable links, got %d", count)
+	}
+
+	// Verify the ADF was not modified (read-only)
+	href := doc.Content[0].Content[0].Marks[0].Attrs["href"].(string)
+	if href != "target.md" {
+		t.Errorf("expected original href 'target.md', got %q (ADF was modified!)", href)
+	}
+}
+
+func TestDryRunLinkPreview(t *testing.T) {
+	dir := t.TempDir()
+
+	cfgPath := writeConfigAndDocs(t, dir, `url: https://site.atlassian.net
+space: DEVOPS
+email: user@example.com
+documents:
+  - input: doc1.md
+  - input: doc2.md
+`, map[string]string{
+		"doc1.md": "# Doc 1\n\nSee [doc2](doc2.md) for more.\n",
+		"doc2.md": "# Doc 2\n\nContent here.\n",
+	})
+
+	t.Setenv("CONFLUENCE_TOKEN", "fake-token")
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"--config", cfgPath, "--dry-run"}, "test", &stdout, &stderr)
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d; stderr: %s", code, stderr.String())
+	}
+
+	if !strings.Contains(stderr.String(), "would resolve") {
+		t.Errorf("expected dry-run link preview message, got %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "1 inter-document link(s)") {
+		t.Errorf("expected link count in preview, got %q", stderr.String())
 	}
 }

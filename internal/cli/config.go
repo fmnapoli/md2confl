@@ -177,10 +177,15 @@ func (app *appEnv) runDocuments(inputFilter string) error {
 		}
 	}
 
-	// Second pass: resolve inter-document links
+	// Second pass: resolve inter-document links across all published docs
+	// (including files from directory inputs, not just the config entries).
 	if len(app.docResults) > 1 {
-		if err := app.resolveInterDocLinks(filtered); err != nil {
-			return fmt.Errorf("resolving inter-document links: %w", err)
+		if app.dryRun {
+			app.previewInterDocLinksFromResults()
+		} else {
+			if err := app.resolveInterDocLinksFromResults(); err != nil {
+				return fmt.Errorf("resolving inter-document links: %w", err)
+			}
 		}
 	}
 
