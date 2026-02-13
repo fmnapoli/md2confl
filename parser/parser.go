@@ -180,13 +180,19 @@ func (w *walker) walk(node ast.Node, entering bool) (ast.WalkStatus, error) {
 		} else {
 			content := w.pop()
 			if w.taskState != nil {
+				// ADF taskItem expects inline content directly — unwrap
+				// the paragraph that goldmark wraps around list item text.
+				inline := content
+				if len(content) == 1 && content[0].Type == "paragraph" {
+					inline = content[0].Content
+				}
 				w.append(adf.Node{
 					Type: "taskItem",
 					Attrs: map[string]any{
 						"localId": w.nextLocalID(),
 						"state":   *w.taskState,
 					},
-					Content: content,
+					Content: inline,
 				})
 				w.taskState = nil
 			} else {

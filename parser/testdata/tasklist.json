@@ -16,17 +16,12 @@
           },
           "content": [
             {
-              "type": "paragraph",
-              "content": [
-                {
-                  "type": "text",
-                  "text": "Buy"
-                },
-                {
-                  "type": "text",
-                  "text": " groceries"
-                }
-              ]
+              "type": "text",
+              "text": "Buy"
+            },
+            {
+              "type": "text",
+              "text": " groceries"
             }
           ]
         },
@@ -38,22 +33,17 @@
           },
           "content": [
             {
-              "type": "paragraph",
-              "content": [
+              "type": "text",
+              "text": "Write "
+            },
+            {
+              "type": "text",
+              "marks": [
                 {
-                  "type": "text",
-                  "text": "Write "
-                },
-                {
-                  "type": "text",
-                  "marks": [
-                    {
-                      "type": "strong"
-                    }
-                  ],
-                  "text": "report"
+                  "type": "strong"
                 }
-              ]
+              ],
+              "text": "report"
             }
           ]
         },
@@ -65,22 +55,17 @@
           },
           "content": [
             {
-              "type": "paragraph",
-              "content": [
+              "type": "text",
+              "text": "Call "
+            },
+            {
+              "type": "text",
+              "marks": [
                 {
-                  "type": "text",
-                  "text": "Call "
-                },
-                {
-                  "type": "text",
-                  "marks": [
-                    {
-                      "type": "code"
-                    }
-                  ],
-                  "text": "John"
+                  "type": "code"
                 }
-              ]
+              ],
+              "text": "John"
             }
           ]
         }
