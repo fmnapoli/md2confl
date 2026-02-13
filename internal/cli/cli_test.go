@@ -823,3 +823,304 @@ func TestBuildDirTree_NotADir(t *testing.T) {
 		t.Fatal("expected error for non-directory")
 	}
 }
+
+// --- Config integration tests ---
+
+func writeConfigAndDocs(t *testing.T, dir, configContent string, docs map[string]string) string {
+	t.Helper()
+	cfgPath := filepath.Join(dir, ".md2confl.yml")
+	if err := os.WriteFile(cfgPath, []byte(configContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for path, content := range docs {
+		fullPath := filepath.Join(dir, path)
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return cfgPath
+}
+
+func TestRun_ConfigGlobalsDryRun(t *testing.T) {
+	dir := t.TempDir()
+	inputFile := filepath.Join(dir, "doc.md")
+	if err := os.WriteFile(inputFile, []byte("# Hello\n\nContent\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfgPath := writeConfigAndDocs(t, dir, `url: https://site.atlassian.net
+space: DEVOPS
+email: user@example.com
+documents:
+  - input: doc.md
+    title: "My Doc"
+`, nil)
+
+	t.Setenv("CONFLUENCE_TOKEN", "fake-token")
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"--config", cfgPath, "--dry-run"}, "test", &stdout, &stderr)
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d; stderr: %s", code, stderr.String())
+	}
+
+	// Dry-run with publish flags should show simulation
+	if !strings.Contains(stderr.String(), "Dry-run: would publish") {
+		t.Errorf("expected dry-run simulation message, got %q", stderr.String())
+	}
+}
+
+func TestRun_ConfigFlagOverride(t *testing.T) {
+	dir := t.TempDir()
+	inputFile := filepath.Join(dir, "doc.md")
+	if err := os.WriteFile(inputFile, []byte("# Hello\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfgPath := writeConfigAndDocs(t, dir, `url: https://site.atlassian.net
+space: ORIGINAL
+email: user@example.com
+documents:
+  - input: doc.md
+`, nil)
+
+	t.Setenv("CONFLUENCE_TOKEN", "fake-token")
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"--config", cfgPath, "--space", "OVERRIDE", "--dry-run"}, "test", &stdout, &stderr)
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d; stderr: %s", code, stderr.String())
+	}
+
+	// Space should be overridden by flag
+	if !strings.Contains(stderr.String(), "Space: OVERRIDE") {
+		t.Errorf("expected space OVERRIDE in output, got %q", stderr.String())
+	}
+}
+
+func TestRun_ConfigOverridesEnvVar(t *testing.T) {
+	dir := t.TempDir()
+	inputFile := filepath.Join(dir, "doc.md")
+	if err := os.WriteFile(inputFile, []byte("# Hello\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfgPath := writeConfigAndDocs(t, dir, `url: https://config.atlassian.net
+space: CONFIG
+email: config@example.com
+documents:
+  - input: doc.md
+`, nil)
+
+	t.Setenv("CONFLUENCE_URL", "https://env.atlassian.net")
+	t.Setenv("CONFLUENCE_EMAIL", "env@example.com")
+	t.Setenv("CONFLUENCE_TOKEN", "fake-token")
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"--config", cfgPath, "--dry-run"}, "test", &stdout, &stderr)
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d; stderr: %s", code, stderr.String())
+	}
+
+	// Config URL should override env var
+	if !strings.Contains(stderr.String(), "URL: https://config.atlassian.net") {
+		t.Errorf("expected config URL to override env var, got %q", stderr.String())
+	}
+}
+
+func TestRun_ConfigDocumentOverride(t *testing.T) {
+	dir := t.TempDir()
+	inputFile := filepath.Join(dir, "doc.md")
+	if err := os.WriteFile(inputFile, []byte("# Hello\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfgPath := writeConfigAndDocs(t, dir, `url: https://site.atlassian.net
+space: GLOBAL
+email: user@example.com
+documents:
+  - input: doc.md
+    space: DOCSPACE
+`, nil)
+
+	t.Setenv("CONFLUENCE_TOKEN", "fake-token")
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"--config", cfgPath, "--dry-run"}, "test", &stdout, &stderr)
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d; stderr: %s", code, stderr.String())
+	}
+
+	// Document-level space should override global
+	if !strings.Contains(stderr.String(), "Space: DOCSPACE") {
+		t.Errorf("expected document space override, got %q", stderr.String())
+	}
+}
+
+func TestRun_ConfigMultiDocument(t *testing.T) {
+	dir := t.TempDir()
+
+	cfgPath := writeConfigAndDocs(t, dir, `url: https://site.atlassian.net
+space: DEVOPS
+email: user@example.com
+documents:
+  - input: doc1.md
+  - input: doc2.md
+`, map[string]string{
+		"doc1.md": "# Doc 1\n\nFirst\n",
+		"doc2.md": "# Doc 2\n\nSecond\n",
+	})
+
+	t.Setenv("CONFLUENCE_TOKEN", "fake-token")
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"--config", cfgPath, "--dry-run"}, "test", &stdout, &stderr)
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d; stderr: %s", code, stderr.String())
+	}
+
+	// Should have 2 ADF documents in output
+	output := stdout.String()
+	count := strings.Count(output, `"type": "doc"`)
+	if count != 2 {
+		t.Errorf("expected 2 ADF documents, got %d", count)
+	}
+}
+
+func TestRun_ConfigInputFilter(t *testing.T) {
+	dir := t.TempDir()
+
+	cfgPath := writeConfigAndDocs(t, dir, `url: https://site.atlassian.net
+space: DEVOPS
+email: user@example.com
+documents:
+  - input: doc1.md
+  - input: doc2.md
+`, map[string]string{
+		"doc1.md": "# Doc 1\n\nFirst\n",
+		"doc2.md": "# Doc 2\n\nSecond\n",
+	})
+
+	t.Setenv("CONFLUENCE_TOKEN", "fake-token")
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"--config", cfgPath, "--input", filepath.Join(dir, "doc1.md"), "--dry-run"}, "test", &stdout, &stderr)
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d; stderr: %s", code, stderr.String())
+	}
+
+	// Should have only 1 ADF document
+	output := stdout.String()
+	count := strings.Count(output, `"type": "doc"`)
+	if count != 1 {
+		t.Errorf("expected 1 ADF document, got %d", count)
+	}
+}
+
+func TestRun_ConfigConvertMode(t *testing.T) {
+	dir := t.TempDir()
+	outputFile := filepath.Join(dir, "out.json")
+
+	cfgPath := writeConfigAndDocs(t, dir, fmt.Sprintf(`documents:
+  - input: doc.md
+    output: %s
+`, outputFile), map[string]string{
+		"doc.md": "# Hello\n\nWorld\n",
+	})
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"--config", cfgPath}, "test", &stdout, &stderr)
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d; stderr: %s", code, stderr.String())
+	}
+
+	// Output file should exist with valid JSON
+	data, err := os.ReadFile(outputFile)
+	if err != nil {
+		t.Fatalf("output file not created: %v", err)
+	}
+
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("invalid JSON output: %v", err)
+	}
+	if doc["type"] != "doc" {
+		t.Errorf("expected type 'doc', got %v", doc["type"])
+	}
+}
+
+func TestRun_ConfigNoInputNoDocuments(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, ".md2confl.yml")
+	if err := os.WriteFile(cfgPath, []byte("url: https://example.com\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"--config", cfgPath}, "test", &stdout, &stderr)
+	if code != 1 {
+		t.Errorf("expected exit code 1, got %d", code)
+	}
+}
+
+func TestRun_ConfigAutoDiscovery(t *testing.T) {
+	dir := t.TempDir()
+
+	writeConfigAndDocs(t, dir, `documents:
+  - input: doc.md
+`, map[string]string{
+		"doc.md": "# Auto\n\nDiscovery\n",
+	})
+
+	// Change to temp dir for auto-discovery
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"--dry-run"}, "test", &stdout, &stderr)
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d; stderr: %s", code, stderr.String())
+	}
+
+	if !strings.Contains(stderr.String(), "Using config:") {
+		t.Errorf("expected auto-discovery message, got %q", stderr.String())
+	}
+}
+
+func TestRun_NoConfigBackwardCompat(t *testing.T) {
+	dir := t.TempDir()
+	inputFile := filepath.Join(dir, "test.md")
+	if err := os.WriteFile(inputFile, []byte("# Hello\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Change to a dir without config to avoid auto-discovery
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"--input", inputFile, "--dry-run"}, "test", &stdout, &stderr)
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d; stderr: %s", code, stderr.String())
+	}
+
+	var doc map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+		t.Fatalf("default output is not valid JSON: %v", err)
+	}
+}

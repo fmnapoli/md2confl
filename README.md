@@ -295,7 +295,8 @@ Output de erro:
 
 | Flag | Tipo | Padrão | Descrição |
 |------|------|--------|-----------|
-| `--input` | `string` | — | **(obrigatória)** Caminho para arquivo `.md` ou diretório. Se diretório, processa recursivamente todos os `.md` respeitando a hierarquia de pastas. |
+| `--input` | `string` | — | Caminho para arquivo `.md` ou diretório. Obrigatória, exceto quando o config file define `documents`. Se diretório, processa recursivamente todos os `.md` respeitando a hierarquia de pastas. |
+| `--config` | `string` | — | Caminho para arquivo de configuração YAML. Se omitido, auto-detecta `.md2confl.yml` no diretório corrente. |
 | `--output` | `string` | — | Caminho do arquivo ADF JSON de saída. Mutuamente exclusivo com `--publish` e `--dry-run`. |
 | `--dry-run` | `bool` | `false` | Imprime o ADF JSON no stdout sem publicar. Se combinado com `--publish`, mostra simulação (título, espaço, URL) no stderr. |
 | `--publish` | `bool` | `false` | Publica no Confluence Cloud. Requer `--url`, `--space`, `--email` e `--token` (via flags ou env vars). |
@@ -331,7 +332,7 @@ Output de erro:
 | `CONFLUENCE_EMAIL` | `--email` | E-mail da conta Atlassian |
 | `CONFLUENCE_TOKEN` | `--token` | API token da Atlassian |
 
-**Precedência:** flag > variável de ambiente. Se ambos estão definidos, a flag vence.
+**Precedência:** flag > config (document-level) > config (global-level) > variável de ambiente. Se ambos estão definidos, o nível mais específico vence.
 
 > **Segurança:** prefira `CONFLUENCE_TOKEN` via variável de ambiente. Passar o token via `--token` na linha de comando o expõe no histórico do shell e na lista de processos (`ps`). O md2confl emite um warning no stderr quando detecta que o token foi passado via flag.
 
@@ -344,6 +345,85 @@ export CONFLUENCE_TOKEN="seu-api-token"
 
 # Agora só precisa das flags específicas da operação:
 md2confl --input doc.md --publish --space DEVOPS --title "Minha Página"
+```
+
+## Arquivo de configuração
+
+O `md2confl` suporta um arquivo de configuração YAML (`.md2confl.yml`) que centraliza defaults globais e mapeia documentos para publicação ou conversão. Isso elimina a repetição de flags como `--url`, `--space`, `--email`, etc.
+
+### Formato do config
+
+```yaml
+# .md2confl.yml
+
+# Defaults globais — aplicados a todos os documentos
+url: https://site.atlassian.net
+space: DEVOPS
+email: user@example.com
+parent-id: "12345"
+force: true
+write-marker: true
+
+# Documentos — cada entry mapeia input → destino
+documents:
+  # Publish: input → Confluence
+  - input: docs/architecture.md
+    title: "Architecture Overview"
+    # herda url, space, email, parent-id do global
+
+  - input: docs/runbook.md
+    title: "Operations Runbook"
+    space: OPS                 # override do global
+    parent-id: "67890"
+
+  # Convert: input → arquivo JSON
+  - input: docs/spec.md
+    output: dist/spec.json     # sem publish — apenas converte
+
+  - input: docs/onboarding.md
+    # title derivado do H1 (comportamento default)
+```
+
+**Regras:**
+- `token` **não pode** estar no config (segurança) — sempre via `CONFLUENCE_TOKEN` ou `--token`
+- Se entry tem `output:` → modo convert (gera JSON); se não → modo publish
+- `documents` é uma lista ordenada (processados em sequência)
+- Cada entry precisa apenas de `input` — tudo mais é opcional e herda do global
+- Caminhos relativos são resolvidos a partir do diretório do config
+
+### Uso com config
+
+```bash
+# Processar TODOS os documents do config
+md2confl --config .md2confl.yml
+
+# Filtrar por um input específico
+md2confl --config .md2confl.yml --input docs/runbook.md
+
+# Override via flag (flag > config)
+md2confl --config .md2confl.yml --space STAGING
+
+# Preview sem publicar
+md2confl --config .md2confl.yml --dry-run
+
+# Sem config — comportamento atual inalterado
+md2confl --input doc.md --publish --url https://... --space DEVOPS
+```
+
+### Auto-discovery
+
+Sem `--config` explícito, o md2confl procura `.md2confl.yml` (ou `.md2confl.yaml`) no diretório corrente. Se encontrar, carrega silenciosamente e emite uma mensagem no stderr:
+
+```
+Using config: /path/to/.md2confl.yml
+```
+
+Se não encontrar, segue o fluxo normal baseado em flags.
+
+### Precedência
+
+```
+flag > config (document-level) > config (global-level) > env var
 ```
 
 ## Exit codes
@@ -690,8 +770,10 @@ go test ./parser -update
 cmd/md2confl/         Entrypoint — main.go chama cli.Run()
 internal/cli/         Orquestração CLI — flags, I/O, publicação, modo diretório
   cli.go              Lógica principal — parsing, publish, dir tree, mermaid rendering
+  config.go           Config file — structs, loading, auto-discovery, apply
   output.go           Formatação de resultado e erro (texto + JSON)
-  cli_test.go         Testes unitários
+  cli_test.go         Testes unitários e integração
+  config_test.go      Testes unitários do config
 adf/                  Tipos ADF (Document, Node, Mark)
   types.go            Structs + construtores
 parser/               Conversão Markdown → ADF

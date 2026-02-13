@@ -39,6 +39,8 @@ type appEnv struct {
 	writeMarker bool
 	jsonOutput  bool
 	showVersion bool
+	configPath  string
+	config      *Config
 
 	version string
 	stdout  io.Writer
@@ -102,11 +104,13 @@ func (app *appEnv) fromArgs(args []string) error {
 	fs.BoolVar(&app.writeMarker, "write-marker", false, "Write page ID marker back to Markdown file")
 	fs.BoolVar(&app.jsonOutput, "json", false, "Output in JSON format")
 	fs.BoolVar(&app.showVersion, "version", false, "Show version")
+	fs.StringVar(&app.configPath, "config", "", "Path to config file (default: auto-detect .md2confl.yml)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(app.stderr, "md2confl — Convert Markdown to Confluence ADF and publish\n\n")
 		fmt.Fprintf(app.stderr, "Usage:\n")
-		fmt.Fprintf(app.stderr, "  md2confl --input <path> [options]\n\n")
+		fmt.Fprintf(app.stderr, "  md2confl --input <path> [options]\n")
+		fmt.Fprintf(app.stderr, "  md2confl --config <path> [options]\n\n")
 		fmt.Fprintf(app.stderr, "Examples:\n")
 		fmt.Fprintf(app.stderr, "  md2confl --input doc.md --output doc.json     Convert to ADF file\n")
 		fmt.Fprintf(app.stderr, "  md2confl --input doc.md --dry-run             Preview ADF in terminal\n")
@@ -115,7 +119,9 @@ func (app *appEnv) fromArgs(args []string) error {
 		fmt.Fprintf(app.stderr, "    --space DEVOPS --title \"My Page\"\n")
 		fmt.Fprintf(app.stderr, "  md2confl --input docs/ --publish \\            Publish folder hierarchy\n")
 		fmt.Fprintf(app.stderr, "    --url https://site.atlassian.net \\\n")
-		fmt.Fprintf(app.stderr, "    --space DEVOPS\n\n")
+		fmt.Fprintf(app.stderr, "    --space DEVOPS\n")
+		fmt.Fprintf(app.stderr, "  md2confl --config .md2confl.yml               Process all config documents\n")
+		fmt.Fprintf(app.stderr, "  md2confl --config .md2confl.yml --input x.md  Process single config document\n\n")
 		fmt.Fprintf(app.stderr, "Flags:\n")
 		fs.PrintDefaults()
 		fmt.Fprintf(app.stderr, "\nEnvironment variables:\n")
@@ -138,8 +144,35 @@ func (app *appEnv) fromArgs(args []string) error {
 		return fmt.Errorf("no arguments provided")
 	}
 
-	if app.input == "" {
-		return fmt.Errorf("--input is required")
+	// Collect explicitly set flags for precedence
+	explicitFlags := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) {
+		explicitFlags[f.Name] = true
+	})
+
+	// Load config: explicit --config or auto-discovery
+	if app.configPath != "" {
+		cfg, err := loadConfig(app.configPath)
+		if err != nil {
+			return err
+		}
+		app.config = cfg
+	} else if found := findConfig(); found != "" {
+		cfg, err := loadConfig(found)
+		if err != nil {
+			return err
+		}
+		app.config = cfg
+		app.configPath = found
+		fmt.Fprintf(app.stderr, "Using config: %s\n", found)
+	}
+
+	// Apply config globals (fills gaps not set by flags)
+	app.applyConfig(explicitFlags)
+
+	// --input is optional when config has documents
+	if app.input == "" && (app.config == nil || len(app.config.Documents) == 0) {
+		return fmt.Errorf("--input is required (or define documents in config file)")
 	}
 
 	if app.output != "" && app.publish {
@@ -149,13 +182,19 @@ func (app *appEnv) fromArgs(args []string) error {
 		return fmt.Errorf("--output and --dry-run are mutually exclusive")
 	}
 	if app.writeMarker && !app.publish {
-		return fmt.Errorf("--write-marker requires --publish")
+		// In config mode, write-marker can be set via config without --publish flag
+		// since publish is determined per-document
+		if app.config == nil {
+			return fmt.Errorf("--write-marker requires --publish")
+		}
 	}
 	if app.force && !app.publish {
-		return fmt.Errorf("--force requires --publish")
+		if app.config == nil {
+			return fmt.Errorf("--force requires --publish")
+		}
 	}
 
-	// Resolve credentials from env vars if not set via flags
+	// Resolve credentials from env vars if not set via flags or config
 	if app.url == "" {
 		app.url = os.Getenv("CONFLUENCE_URL")
 	}
@@ -164,11 +203,12 @@ func (app *appEnv) fromArgs(args []string) error {
 	}
 	if app.token == "" {
 		app.token = os.Getenv("CONFLUENCE_TOKEN")
-	} else {
+	} else if explicitFlags["token"] {
 		fmt.Fprintf(app.stderr, "Warning: passing API token via CLI flag is insecure; prefer CONFLUENCE_TOKEN env var\n")
 	}
 
-	if app.publish {
+	// Only validate publish requirements when --publish is explicitly set (not in config multi-doc mode)
+	if app.publish && app.input != "" {
 		if app.url == "" {
 			return fmt.Errorf("--publish requires --url or CONFLUENCE_URL")
 		}
@@ -187,6 +227,22 @@ func (app *appEnv) fromArgs(args []string) error {
 }
 
 func (app *appEnv) run() error {
+	// Multi-document mode: no --input but config has documents
+	if app.input == "" && app.config != nil && len(app.config.Documents) > 0 {
+		return app.runDocuments("")
+	}
+
+	// If --input matches a document in config, apply document overrides
+	if app.input != "" && app.config != nil && len(app.config.Documents) > 0 {
+		for _, doc := range app.config.Documents {
+			absInput, _ := filepath.Abs(doc.Input)
+			absFlag, _ := filepath.Abs(app.input)
+			if absInput == absFlag {
+				return app.runDocuments(app.input)
+			}
+		}
+	}
+
 	// Check input path exists
 	info, err := os.Stat(app.input)
 	if err != nil {
