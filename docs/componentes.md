@@ -1,3 +1,4 @@
+<!-- confluence-page-id: 1278002 -->
 # Componentes ADF
 
 Esta página demonstra todos os elementos Markdown suportados pelo md2confl e como são renderizados no Confluence.
