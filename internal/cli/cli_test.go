@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fabrizio/md2confl/adf"
+	"github.com/fmnapoli/md2confl/adf"
 )
 
 func TestExtractPageID(t *testing.T) {

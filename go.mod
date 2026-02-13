@@ -1,4 +1,4 @@
-module github.com/fabrizio/md2confl
+module github.com/fmnapoli/md2confl
 
 go 1.25.5
 

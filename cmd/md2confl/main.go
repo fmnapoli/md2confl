@@ -6,7 +6,7 @@ package main
 import (
 	"os"
 
-	"github.com/fabrizio/md2confl/internal/cli"
+	"github.com/fmnapoli/md2confl/internal/cli"
 )
 
 // Version is set at build time via ldflags.

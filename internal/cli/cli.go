@@ -16,9 +16,9 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/fabrizio/md2confl/adf"
-	"github.com/fabrizio/md2confl/confluence"
-	"github.com/fabrizio/md2confl/parser"
+	"github.com/fmnapoli/md2confl/adf"
+	"github.com/fmnapoli/md2confl/confluence"
+	"github.com/fmnapoli/md2confl/parser"
 )
 
 type appEnv struct {

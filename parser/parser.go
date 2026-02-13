@@ -8,7 +8,7 @@
 package parser
 
 import (
-	"github.com/fabrizio/md2confl/adf"
+	"github.com/fmnapoli/md2confl/adf"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
 	east "github.com/yuin/goldmark/extension/ast"

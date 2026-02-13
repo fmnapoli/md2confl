@@ -68,7 +68,7 @@ graph LR
 ### Via `go install`
 
 ```bash
-go install github.com/fabrizio/md2confl/cmd/md2confl@latest
+go install github.com/fmnapoli/md2confl/cmd/md2confl@latest
 ```
 
 Isso compila e instala o binário em `$GOPATH/bin/md2confl` (ou `$HOME/go/bin/md2confl`).
@@ -76,7 +76,7 @@ Isso compila e instala o binário em `$GOPATH/bin/md2confl` (ou `$HOME/go/bin/md
 ### Build manual
 
 ```bash
-git clone https://github.com/fabrizio/md2confl.git
+git clone https://github.com/fmnapoli/md2confl.git
 cd md2confl
 make build
 # binário em bin/md2confl

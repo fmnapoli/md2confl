@@ -12,7 +12,7 @@ go version
 # go version go1.25.5 linux/amd64
 
 # Clonar e verificar que tudo compila
-git clone https://github.com/fabrizio/md2confl.git
+git clone https://github.com/fmnapoli/md2confl.git
 cd md2confl
 make build && make test
 ```
