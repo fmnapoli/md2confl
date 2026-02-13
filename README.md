@@ -92,8 +92,6 @@ graph LR
 | [Desenvolvimento](docs/desenvolvimento.md) | Pré-requisitos, Makefile, testes, golden files, estrutura |
 | [CI/CD](docs/ci-cd.md) | Automatizar publicação com GitHub Actions |
 
-> Esta documentação também está publicada no Confluence: [fmnapoli.atlassian.net/wiki/spaces/DDS/pages/589826/md2confl](https://fmnapoli.atlassian.net/wiki/spaces/DDS/pages/589826/md2confl)
-
 ## Licença
 
 [Apache License 2.0](LICENSE)
