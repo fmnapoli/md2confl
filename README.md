@@ -1,5 +1,12 @@
 # md2confl
 
+[![CI](https://github.com/fmnapoli/md2confl/actions/workflows/ci.yml/badge.svg)](https://github.com/fmnapoli/md2confl/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/fmnapoli/md2confl)](https://goreportcard.com/report/github.com/fmnapoli/md2confl)
+[![Go Reference](https://pkg.go.dev/badge/github.com/fmnapoli/md2confl.svg)](https://pkg.go.dev/github.com/fmnapoli/md2confl)
+[![License](https://img.shields.io/github/license/fmnapoli/md2confl)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/fmnapoli/md2confl)](https://github.com/fmnapoli/md2confl/releases/latest)
+[![Docker](https://img.shields.io/docker/v/fmnapoli/md2confl?label=docker&sort=semver)](https://hub.docker.com/r/fmnapoli/md2confl)
+
 Converte arquivos Markdown para o formato [Atlassian Document Format (ADF)](https://developer.atlassian.com/cloud/jira/platform/apis/document/structure/) e publica diretamente no Confluence Cloud.
 
 ## Visão geral
