@@ -113,6 +113,49 @@ Página 999 (pai)
         └── Deploy em Produção     ← docs/guias/deploy.md
 ```
 
+## Resolução de links inter-documento
+
+Quando múltiplos documentos são publicados juntos (via config ou modo diretório), o md2confl resolve automaticamente links relativos entre eles. Links como `[Instalação](instalacao.md)` são substituídos pela URL real da página no Confluence.
+
+### Como funciona
+
+1. **Primeiro pass:** todos os documentos são publicados normalmente
+2. **Segundo pass:** o md2confl percorre cada documento buscando links relativos (`.md`) que correspondam a outros documentos publicados
+3. Links encontrados são substituídos pela URL do Confluence e a página é atualizada
+
+### Fragments
+
+Fragments (`#heading`) são preservados na resolução. Um link como `instalacao.md#como-obter` é resolvido para `https://site.atlassian.net/wiki/.../Instalação#como-obter`.
+
+### Output
+
+Após a resolução, o md2confl exibe a contagem de links resolvidos por documento:
+
+```
+Resolved 7 inter-document link(s) in "README.md"
+Resolved 2 inter-document link(s) in "ci-cd.md"
+```
+
+Em modo `--dry-run`, mostra um preview sem modificar nada:
+
+```
+Dry-run: would resolve 7 inter-document link(s) in "README.md"
+```
+
+### Regras
+
+| Cenário | Comportamento |
+|---------|--------------|
+| Link relativo para documento publicado | Substituído pela URL do Confluence |
+| Link relativo para documento não publicado | Mantido inalterado |
+| Link absoluto (`https://...`) | Ignorado |
+| Fragment-only (`#secao`) | Ignorado (âncora na mesma página) |
+| Link com fragment (`doc.md#secao`) | URL resolvida + fragment preservado |
+
+## Modo pasta — force para child files
+
+No modo diretório, `--force` também se aplica a páginas filhas. Se um arquivo `.md` não tem marcador `confluence-page-id`, o md2confl busca uma página com o mesmo título no espaço antes de criar uma nova. Isso permite re-publicar uma hierarquia sem duplicar páginas, mesmo antes de ter os marcadores escritos.
+
 ## Mermaid no Confluence
 
 O Confluence Cloud **não renderiza Mermaid nativamente**. O `md2confl` resolve isso de duas formas:

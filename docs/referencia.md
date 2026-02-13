@@ -76,6 +76,13 @@ Dry-run: would publish to Confluence
 { ... ADF JSON ... }
 ```
 
+Com `--config`, o dry-run também mostra um preview dos links inter-documento que seriam resolvidos:
+
+```
+Dry-run: would resolve 7 inter-document link(s) in "README.md"
+Dry-run: would resolve 2 inter-document link(s) in "ci-cd.md"
+```
+
 ### 4. Publicar no Confluence
 
 ```bash
@@ -177,7 +184,7 @@ Output de erro:
 
 | Flag | Tipo | Padrão | Descrição |
 |------|------|--------|-----------|
-| `--input` | `string` | — | Caminho para arquivo `.md` ou diretório. Obrigatória, exceto quando o config file define `documents`. Se diretório, processa recursivamente todos os `.md` respeitando a hierarquia de pastas. |
+| `--input` | `string` | — | Caminho para arquivo `.md` ou diretório. Obrigatória, exceto quando o config file define `documents`. Se diretório, processa recursivamente todos os `.md` respeitando a hierarquia de pastas. Também funciona como `input` em entries do config. |
 | `--config` | `string` | — | Caminho para arquivo de configuração YAML. Se omitido, auto-detecta `.md2confl.yml` no diretório corrente. |
 | `--output` | `string` | — | Caminho do arquivo ADF JSON de saída. Mutuamente exclusivo com `--publish` e `--dry-run`. |
 | `--dry-run` | `bool` | `false` | Imprime o ADF JSON no stdout sem publicar. Se combinado com `--publish`, mostra simulação (título, espaço, URL) no stderr. |

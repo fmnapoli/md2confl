@@ -65,12 +65,11 @@ documents:
   - input: README.md
     title: "Meu Projeto"
 
-  - input: docs/quickstart.md
-    parent-id: "12345"
-
-  - input: docs/api.md
-    parent-id: "12345"
+  - input: docs/
+    parent-id: "12345"    # publica toda a pasta como árvore
 ```
+
+O `input: docs/` publica todos os `.md` da pasta como hierarquia de páginas. Links relativos entre documentos (ex: `[Instalação](docs/instalacao.md)` no README) são resolvidos automaticamente para URLs do Confluence após a publicação.
 
 Para detalhes sobre o formato, veja [Configuração](configuracao.md).
 

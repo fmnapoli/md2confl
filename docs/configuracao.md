@@ -78,6 +78,30 @@ Se não encontrar, segue o fluxo normal baseado em flags.
 flag > config (document-level) > config (global-level) > env var
 ```
 
+## Input de diretório
+
+Além de arquivos individuais, o `input` pode apontar para um diretório. O md2confl processa todos os `.md` recursivamente, criando uma hierarquia de páginas no Confluence (veja [Publicação → Modo pasta](publicacao.md#modo-pasta)):
+
+```yaml
+documents:
+  - input: README.md
+    title: "Meu Projeto"
+
+  - input: docs/
+    parent-id: "12345"    # publica toda a pasta como árvore de páginas
+```
+
+O `README.md` dentro da pasta vira a página pai do diretório. Os demais `.md` viram páginas filhas. Subdiretórios são processados recursivamente.
+
+## Resolução de links inter-documento
+
+Quando o config tem múltiplos documentos (ou diretórios), o md2confl resolve automaticamente links relativos entre eles. Por exemplo, se `README.md` contém `[Quick Start](docs/quickstart.md)`, após a publicação o link é substituído pela URL da página correspondente no Confluence.
+
+- Links para arquivos não publicados são mantidos inalterados
+- Fragments são preservados: `instalacao.md#como-obter` → `https://.../Instalação#como-obter`
+- A contagem de links resolvidos é exibida no output: `Resolved 7 inter-document link(s) in "README.md"`
+- Em `--dry-run`, exibe preview: `Dry-run: would resolve 7 inter-document link(s) in "README.md"`
+
 ## Exemplo: publicar múltiplos documentos
 
 Um caso comum é manter a documentação no repositório e publicar todas as páginas com um único comando:
@@ -94,14 +118,13 @@ documents:
   - input: README.md
     title: "Meu Projeto"
 
-  - input: docs/quickstart.md
-    parent-id: "12345"    # página filha do README
-
-  - input: docs/api.md
-    parent-id: "12345"
+  - input: docs/
+    parent-id: "12345"    # publica toda a pasta como árvore
 ```
 
 ```bash
 # Publica tudo de uma vez
 md2confl --config .md2confl.yml
 ```
+
+Links entre `README.md` e os arquivos em `docs/` são resolvidos automaticamente para URLs do Confluence.
