@@ -1,5 +1,5 @@
 <!-- confluence-page-id: 589826 -->
-# md2confl
+# md2confl - New
 
 [![CI](https://github.com/fmnapoli/md2confl/actions/workflows/ci.yml/badge.svg)](https://github.com/fmnapoli/md2confl/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/fmnapoli/md2confl/branch/main/graph/badge.svg)](https://codecov.io/gh/fmnapoli/md2confl)
