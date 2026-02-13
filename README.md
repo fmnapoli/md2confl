@@ -18,6 +18,8 @@ O `md2confl` resolve isso:
 
 5. **Lida com imagens locais** — referências a imagens locais (`![](./img/foto.png)`) são automaticamente enviadas como attachments e vinculadas à página.
 
+6. **Renderiza diagramas Mermaid** — blocos `mermaid` são pré-renderizados para SVG via `mmdc` (mermaid-cli) durante o publish e enviados como imagens. A imagem Docker inclui tudo necessário (`md2confl` + Node.js + Chromium + mmdc).
+
 ## Arquitetura
 
 ```mermaid
@@ -92,6 +94,34 @@ make cross-compile
 #   linux/amd64, linux/arm64
 #   darwin/amd64, darwin/arm64
 #   windows/amd64
+```
+
+### Via Docker (recomendado para Mermaid)
+
+A imagem Docker inclui `md2confl` + Node.js + Chromium + `mmdc`, sem necessidade de instalar nada além do Docker:
+
+```bash
+docker pull fmnapoli/md2confl:latest
+```
+
+Uso:
+
+```bash
+# Converter para ADF (stdout)
+docker run --rm -v "$(pwd):/workspace" fmnapoli/md2confl --input doc.md
+
+# Publicar no Confluence (diagramas mermaid são renderizados automaticamente)
+docker run --rm -v "$(pwd):/workspace" \
+  -e CONFLUENCE_URL="https://site.atlassian.net" \
+  -e CONFLUENCE_EMAIL="user@example.com" \
+  -e CONFLUENCE_TOKEN="seu-api-token" \
+  fmnapoli/md2confl --input doc.md --publish --space DEVOPS --title "Minha Página"
+```
+
+Build local da imagem:
+
+```bash
+make docker
 ```
 
 ## Uso rápido
@@ -534,19 +564,27 @@ Text with **bold** and a [link](https://example.com).
 
 ## Mermaid no Confluence
 
-O Confluence Cloud **não renderiza Mermaid nativamente**. Diagramas Mermaid em code fences são convertidos como `codeBlock` com `language: "mermaid"`, preservando o código fonte integralmente.
+O Confluence Cloud **não renderiza Mermaid nativamente**. O `md2confl` resolve isso de duas formas:
 
-**Markdown:**
+### Modo publish (com `--publish`)
 
-````markdown
-```mermaid
-graph TD;
-    A-->B;
-    A-->C;
+Quando há blocos `mermaid` no Markdown e `mmdc` está disponível no PATH, o md2confl **pré-renderiza cada diagrama para SVG** antes de publicar. Os SVGs são enviados como attachments (usando o mesmo pipeline de imagens locais).
+
+```bash
+# Com mmdc instalado localmente
+md2confl --input doc.md --publish --space DEVOPS ...
+
+# Ou via Docker (mmdc já incluído)
+docker run --rm -v "$(pwd):/workspace" \
+  -e CONFLUENCE_URL=... -e CONFLUENCE_EMAIL=... -e CONFLUENCE_TOKEN=... \
+  fmnapoli/md2confl --input doc.md --publish --space DEVOPS
 ```
-````
 
-**ADF resultante:**
+Se o Markdown contém blocos mermaid e `mmdc` **não** está instalado, o md2confl retorna erro com instruções de instalação.
+
+### Modo convert/dry-run (sem `--publish`)
+
+Em modos de conversão (`--output`, `--dry-run`, stdout), os blocos mermaid são mantidos como `codeBlock` no ADF, preservando o código fonte:
 
 ```json
 {
@@ -558,7 +596,7 @@ graph TD;
 }
 ```
 
-Para que os diagramas renderizem no Confluence, instale um app de marketplace como [Mermaid Diagrams for Confluence](https://marketplace.atlassian.com/apps/1226567). Esses apps detectam code blocks com linguagem `mermaid` e renderizam o diagrama automaticamente.
+**Alternativa:** se preferir não usar pré-rendering, instale um app de marketplace como [Mermaid Diagrams for Confluence](https://marketplace.atlassian.com/apps/1226567) que detecta code blocks mermaid e renderiza diretamente no Confluence.
 
 ### Imagens locais
 
@@ -584,6 +622,7 @@ make build          # Compila bin/md2confl com versão via git describe
 make test           # go test -race ./...
 make lint           # go vet ./...
 make cross-compile  # Binários para 5 plataformas (linux/darwin/windows × amd64/arm64)
+make docker         # Build da imagem Docker com Node.js + Chromium + mmdc
 make license-check  # Verifica que todo .go tem header SPDX Apache-2.0
 make clean          # Remove bin/
 ```
@@ -608,9 +647,10 @@ O projeto tem 3 suítes de testes:
 
 | Pacote | Tipo de testes | O que cobre |
 |--------|---------------|-------------|
-| `internal/cli` | Unitários | Parsing de flags, restrições de flags, exit codes, derivação de título, extração de page-id, detecção de imagens locais, patching de imagens, output texto/JSON, dry-run, conversão de diretórios |
+| `internal/cli` | Unitários | Parsing de flags, restrições de flags, exit codes, derivação de título, extração de page-id, detecção de imagens locais, patching de imagens, detecção e patching de blocos mermaid, output texto/JSON, dry-run, conversão de diretórios |
 | `parser` | Golden file | Conversão Markdown → ADF para todos os cenários suportados (basic, codeblock, table, mermaid, multi-mermaid, empty) |
 | `confluence` | HTTP mock | Todas as operações da API com `httptest.NewTLSServer`: ResolveSpaceID, CreatePage, GetPage, UpdatePage, FindByTitle, UploadAttachment, erros de autenticação |
+| `mermaid` | Unitário + integração | Verificação de disponibilidade do mmdc, renderização para SVG (skip se mmdc ausente), idempotência de hash |
 
 ### Golden files
 
@@ -645,9 +685,9 @@ go test ./parser -update
 ```
 cmd/md2confl/         Entrypoint — main.go chama cli.Run()
 internal/cli/         Orquestração CLI — flags, I/O, publicação, modo diretório
-  cli.go              Lógica principal (752 linhas) — parsing, publish, dir tree
+  cli.go              Lógica principal — parsing, publish, dir tree, mermaid rendering
   output.go           Formatação de resultado e erro (texto + JSON)
-  cli_test.go         Testes unitários (385 linhas)
+  cli_test.go         Testes unitários
 adf/                  Tipos ADF (Document, Node, Mark)
   types.go            Structs + construtores
 parser/               Conversão Markdown → ADF
@@ -658,6 +698,10 @@ confluence/           Cliente REST API v2
   client.go           HTTP client, CRUD de páginas, upload de attachments
   errors.go           APIError com categorias e hints
   client_test.go      Testes com httptest.NewTLSServer
+mermaid/              Renderização de diagramas Mermaid para SVG
+  mermaid.go          Wrapper do mmdc (mermaid-cli)
+  mermaid_test.go     Testes unitários e integração
+Dockerfile            Imagem Docker multi-stage (Go + Node.js + Chromium + mmdc)
 ```
 
 ## Licença
