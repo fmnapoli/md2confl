@@ -25,6 +25,15 @@ import (
 	"github.com/fmnapoli/md2confl/parser"
 )
 
+// docPublishResult holds the publish outcome for a single document,
+// used to resolve inter-document links in the second pass.
+type docPublishResult struct {
+	pageID   string
+	pageURL  string
+	title    string
+	finalADF *adf.Document
+}
+
 type appEnv struct {
 	input       string
 	output      string
@@ -43,6 +52,7 @@ type appEnv struct {
 	showVersion    bool
 	configPath  string
 	config      *Config
+	docResults  map[string]*docPublishResult // abs input path → result
 
 	version string
 	stdout  io.Writer
@@ -439,6 +449,17 @@ func (app *appEnv) handlePublish(path string, source, adfJSON []byte, doc *adf.D
 					}
 				}
 			}
+		}
+	}
+
+	// Save result for inter-document link resolution (second pass)
+	if app.docResults != nil {
+		absPath, _ := filepath.Abs(path)
+		app.docResults[absPath] = &docPublishResult{
+			pageID:   result.PageID,
+			pageURL:  result.PageURL,
+			title:    result.Title,
+			finalADF: doc,
 		}
 	}
 
@@ -946,4 +967,138 @@ func countMermaidSVGs(doc *adf.Document) int {
 		}
 	}
 	return count
+}
+
+// resolveInterDocLinks performs a second pass over published documents to
+// replace relative Markdown links with Confluence page URLs.
+func (app *appEnv) resolveInterDocLinks(docs []DocConfig) error {
+	// Build linkMap: abs input path → Confluence page URL
+	linkMap := make(map[string]string, len(app.docResults))
+	for absPath, res := range app.docResults {
+		linkMap[absPath] = res.pageURL
+	}
+
+	client, err := confluence.NewClient(confluence.Config{
+		BaseURL:  app.url,
+		SpaceKey: app.space,
+		Email:    app.email,
+		Token:    app.token,
+	})
+	if err != nil {
+		return err
+	}
+
+	for _, doc := range docs {
+		// Skip convert-only documents
+		if doc.Output != "" {
+			continue
+		}
+
+		absPath, _ := filepath.Abs(doc.Input)
+		res, ok := app.docResults[absPath]
+		if !ok || res.finalADF == nil {
+			continue
+		}
+
+		baseDir := filepath.Dir(absPath)
+		if !patchDocLinks(res.finalADF, baseDir, linkMap) {
+			continue
+		}
+
+		patchedJSON, err := json.MarshalIndent(res.finalADF, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshaling patched ADF for %q: %w", doc.Input, err)
+		}
+
+		if err := updatePageWithRetry(client, res.pageID, res.title, string(patchedJSON)); err != nil {
+			return fmt.Errorf("updating page %s with resolved links: %w", res.pageID, err)
+		}
+
+		fmt.Fprintf(app.stderr, "Resolved inter-document links in %q\n", doc.Input)
+	}
+
+	return nil
+}
+
+// updatePageWithRetry fetches the current page version and updates it,
+// retrying once on a version conflict (409).
+func updatePageWithRetry(client *confluence.Client, pageID, title, adfJSON string) error {
+	for attempt := 0; attempt < 2; attempt++ {
+		page, err := client.GetPage(pageID)
+		if err != nil {
+			return err
+		}
+		_, err = client.UpdatePage(pageID, title, adfJSON, page.Version.Number)
+		if err == nil {
+			return nil
+		}
+		var apiErr *confluence.APIError
+		if errors.As(err, &apiErr) && apiErr.Category == confluence.ErrCategoryConflict && attempt == 0 {
+			continue // retry with fresh version
+		}
+		return err
+	}
+	return nil
+}
+
+// patchDocLinks walks the ADF tree and replaces relative Markdown link hrefs
+// with Confluence page URLs using the provided linkMap. Returns true if any
+// links were patched.
+func patchDocLinks(doc *adf.Document, baseDir string, linkMap map[string]string) bool {
+	patched := false
+	for i := range doc.Content {
+		if patchNodeLinks(&doc.Content[i], baseDir, linkMap) {
+			patched = true
+		}
+	}
+	return patched
+}
+
+func patchNodeLinks(node *adf.Node, baseDir string, linkMap map[string]string) bool {
+	patched := false
+
+	// Check marks for link references
+	for i := range node.Marks {
+		if node.Marks[i].Type != "link" {
+			continue
+		}
+		href, ok := node.Marks[i].Attrs["href"].(string)
+		if !ok || href == "" {
+			continue
+		}
+		// Skip absolute URLs
+		if strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") || strings.HasPrefix(href, "//") {
+			continue
+		}
+
+		// Strip fragment for matching
+		cleanHref := href
+		if idx := strings.Index(cleanHref, "#"); idx >= 0 {
+			cleanHref = cleanHref[:idx]
+		}
+		if cleanHref == "" {
+			continue
+		}
+
+		// Resolve relative to baseDir
+		resolved := filepath.Join(baseDir, cleanHref)
+		absResolved, err := filepath.Abs(resolved)
+		if err != nil {
+			continue
+		}
+
+		if pageURL, found := linkMap[absResolved]; found {
+			node.Marks[i].Attrs["href"] = pageURL
+			patched = true
+		}
+	}
+
+	// Recurse into children
+	for i := range node.Content {
+		if patchNodeLinks(&node.Content[i], baseDir, linkMap) {
+			patched = true
+		}
+	}
+
+	return patched
 }

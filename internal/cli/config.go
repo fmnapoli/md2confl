@@ -143,6 +143,7 @@ func (app *appEnv) withDocumentConfig(doc DocConfig) *appEnv {
 
 // runDocuments iterates over config documents and processes each one.
 // If inputFilter is non-empty, only matching documents are processed.
+// After publishing all documents, a second pass resolves inter-document links.
 func (app *appEnv) runDocuments(inputFilter string) error {
 	if app.config == nil || len(app.config.Documents) == 0 {
 		return fmt.Errorf("no documents defined in config")
@@ -165,11 +166,23 @@ func (app *appEnv) runDocuments(inputFilter string) error {
 		}
 	}
 
+	// Initialize shared map for collecting publish results
+	app.docResults = make(map[string]*docPublishResult)
+
+	// First pass: publish all documents
 	for _, doc := range filtered {
 		clone := app.withDocumentConfig(doc)
 		if err := clone.run(); err != nil {
 			return fmt.Errorf("processing %q: %w", doc.Input, err)
 		}
 	}
+
+	// Second pass: resolve inter-document links
+	if len(app.docResults) > 1 {
+		if err := app.resolveInterDocLinks(filtered); err != nil {
+			return fmt.Errorf("resolving inter-document links: %w", err)
+		}
+	}
+
 	return nil
 }
