@@ -265,6 +265,11 @@ A tabela abaixo mostra como cada elemento Markdown é convertido para o ADF corr
 | `1. item` | `orderedList` > `listItem` > `paragraph` | `order: N` se start ≠ 1 | Numeração customizada preservada |
 | `---` / `***` / `___` | `rule` | — | Separador horizontal |
 | Tabela GFM | `table` > `tableRow` > `tableHeader` / `tableCell` | — | Primeira linha = `tableHeader`, demais = `tableCell`. Conteúdo inline é wrapeado em `paragraph`. |
+| `- [ ]` / `- [x]` | `taskList` > `taskItem` | `state: TODO/DONE, localId` | Task lists GFM — checkboxes interativos no Confluence |
+| `> [!NOTE]` / `[!WARNING]` etc. | `panel` | `panelType: info/warning/...` | GitHub alerts → ADF panels. Tipos: NOTE→info, TIP→success, IMPORTANT→note, WARNING→warning, CAUTION→error |
+| `:emoji:` | `emoji` | `shortName, text` | Shortcodes GitHub (`:tada:`, `:rocket:`, etc.) → emoji nativo do Confluence |
+| `<details><summary>` | `expand` | `title` | Bloco colapsável. O `<details>` inteiro deve estar sem linhas em branco internas |
+| `^text^` | text com mark `subsup` | `type: sup` | Superscript — ex: x^2^ renderiza como x² |
 | Soft line break | text `" "` | — | Espaço simples entre linhas |
 | Hard line break (`  \n` ou `\`) | `hardBreak` | — | Quebra de linha forçada |
-| HTML block / inline | — | — | **Ignorado** silenciosamente |
+| HTML block / inline | — | — | **Ignorado** silenciosamente (exceto `<details>`) |

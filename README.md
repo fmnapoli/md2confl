@@ -19,7 +19,7 @@ O Confluence Cloud armazena conteúdo de páginas no formato ADF (Atlassian Docu
 
 O `md2confl` resolve isso:
 
-1. **Converte** Markdown (com extensões GFM — tabelas, strikethrough, autolinks) para ADF JSON válido, usando o parser [goldmark](https://github.com/yuin/goldmark) para construir a AST e um walker próprio para gerar a árvore ADF.
+1. **Converte** Markdown (com extensões GFM — tabelas, strikethrough, task lists, autolinks — além de emojis, GitHub alerts, superscript e `<details>`) para ADF JSON válido, usando o parser [goldmark](https://github.com/yuin/goldmark) para construir a AST e um walker próprio para gerar a árvore ADF.
 
 2. **Publica** páginas no Confluence Cloud via REST API v2, com autenticação Basic (email + API token).
 
@@ -53,7 +53,7 @@ graph LR
 | Pacote | Visibilidade | Responsabilidade |
 |--------|-------------|-----------------|
 | `adf` | Público | Tipos de dados ADF — `Document`, `Node`, `Mark`. Representa o envelope JSON `{"version":1, "type":"doc", "content":[...]}` e a árvore de nós com atributos e marcas inline. |
-| `parser` | Público | Converte `[]byte` Markdown para `*adf.Document`. Usa goldmark com extensão GFM para fazer parse, e um AST walker com stack para construir a árvore ADF. Entrada: bytes Markdown. Saída: documento ADF pronto para serializar. |
+| `parser` | Público | Converte `[]byte` Markdown para `*adf.Document`. Usa goldmark com extensões GFM, emoji e superscript para fazer parse, e um AST walker com stack para construir a árvore ADF. Suporta task lists, GitHub alerts (`[!NOTE]` → panels), emojis (`:tada:`), `<details>` (→ expand) e superscript (`^text^`). |
 | `mermaid` | Público | Renderiza diagramas Mermaid para SVG via `mmdc` (mermaid-cli). Verifica disponibilidade do binário, gera nomes de arquivo determinísticos via SHA256 e configura puppeteer para ambientes Docker/CI. |
 | `confluence` | Público | Cliente REST API v2 do Confluence Cloud. Resolve space key → ID, cria/atualiza páginas, busca por título, faz upload de attachments. Todos os erros são `*APIError` com categoria, status HTTP e hint acionável. |
 | `internal/cli` | Interno | Orquestração CLI: parsing de flags, resolução de credenciais (flags > env vars), modos de operação (dry-run, output file, publish), processamento de diretórios, renderização de mermaid, upload de imagens locais, escrita de marcadores page-id. Não é API pública — só `main.go` importa. |
@@ -91,6 +91,7 @@ graph LR
 | [Publicação](docs/publicacao.md) | Fluxo de publicação, marcadores, modo pasta, Mermaid, imagens |
 | [Desenvolvimento](docs/desenvolvimento.md) | Pré-requisitos, Makefile, testes, golden files, estrutura |
 | [CI/CD](docs/ci-cd.md) | Automatizar publicação com GitHub Actions |
+| [Componentes ADF](docs/componentes.md) | Showcase: todos os elementos Markdown → Confluence |
 
 ## Licença
 

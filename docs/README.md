@@ -10,3 +10,4 @@ Guias detalhados para uso, configuração e contribuição ao md2confl.
 - [Publicação](publicacao.md) — fluxo de publish, imagens e Mermaid
 - [CI/CD](ci-cd.md) — GitHub Actions e automação
 - [Desenvolvimento](desenvolvimento.md) — build, testes e contribuição
+- [Componentes ADF](componentes.md) — showcase de todos os elementos Markdown → Confluence
