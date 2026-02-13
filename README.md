@@ -27,11 +27,13 @@ graph LR
     main["cmd/md2confl<br/><small>entrypoint</small>"]
     cli["internal/cli<br/><small>flags, I/O, orquestração</small>"]
     parser["parser<br/><small>Markdown → ADF</small>"]
+    mermaid["mermaid<br/><small>mmdc → SVG</small>"]
     confluence["confluence<br/><small>REST API v2</small>"]
     adf["adf<br/><small>tipos ADF</small>"]
 
     main --> cli
     cli --> parser
+    cli --> mermaid
     cli --> confluence
     parser --> adf
     confluence --> adf
@@ -41,8 +43,9 @@ graph LR
 |--------|-------------|-----------------|
 | `adf` | Público | Tipos de dados ADF — `Document`, `Node`, `Mark`. Representa o envelope JSON `{"version":1, "type":"doc", "content":[...]}` e a árvore de nós com atributos e marcas inline. |
 | `parser` | Público | Converte `[]byte` Markdown para `*adf.Document`. Usa goldmark com extensão GFM para fazer parse, e um AST walker com stack para construir a árvore ADF. Entrada: bytes Markdown. Saída: documento ADF pronto para serializar. |
+| `mermaid` | Público | Renderiza diagramas Mermaid para SVG via `mmdc` (mermaid-cli). Verifica disponibilidade do binário, gera nomes de arquivo determinísticos via SHA256 e configura puppeteer para ambientes Docker/CI. |
 | `confluence` | Público | Cliente REST API v2 do Confluence Cloud. Resolve space key → ID, cria/atualiza páginas, busca por título, faz upload de attachments. Todos os erros são `*APIError` com categoria, status HTTP e hint acionável. |
-| `internal/cli` | Interno | Orquestração CLI: parsing de flags, resolução de credenciais (flags > env vars), modos de operação (dry-run, output file, publish), processamento de diretórios, upload de imagens locais, escrita de marcadores page-id. Não é API pública — só `main.go` importa. |
+| `internal/cli` | Interno | Orquestração CLI: parsing de flags, resolução de credenciais (flags > env vars), modos de operação (dry-run, output file, publish), processamento de diretórios, renderização de mermaid, upload de imagens locais, escrita de marcadores page-id. Não é API pública — só `main.go` importa. |
 
 ### Fluxo de dados
 
@@ -54,12 +57,13 @@ graph LR
     Walker["walker.walk()<br/><small>stack push/pop</small>"]
     Doc["adf.Document"]
     JSON["JSON<br/><small>stdout ou arquivo</small>"]
+    Mermaid["mmdc<br/><small>mermaid → SVG</small>"]
     API["Confluence API<br/><small>criar/atualizar página</small>"]
-    Attach["Upload attachments<br/><small>imagens locais</small>"]
+    Attach["Upload attachments<br/><small>imagens + SVGs</small>"]
 
     MD --> Parse --> AST --> Walker --> Doc
     Doc --> JSON
-    Doc --> API
+    Doc --> Mermaid --> API
     API --> Attach
 ```
 
@@ -389,7 +393,11 @@ Quando `--publish` é usado, o md2confl decide entre criar ou atualizar uma pág
 flowchart TD
     Start["md2confl --publish --input doc.md"] --> ReadFile["Lê arquivo Markdown"]
     ReadFile --> Convert["Converte para ADF"]
-    Convert --> HasMarker{"Arquivo tem marcador<br/>confluence-page-id?"}
+    Convert --> HasMermaid{"Tem blocos mermaid?"}
+
+    HasMermaid -- "Sim" --> RenderMermaid["mmdc renderiza cada bloco → SVG<br/><small>substitui codeBlock por mediaSingle > media</small>"]
+    RenderMermaid --> HasMarker
+    HasMermaid -- "Não" --> HasMarker{"Arquivo tem marcador<br/>confluence-page-id?"}
 
     HasMarker -- "Sim (ex: &lt;!-- confluence-page-id: 12345 --&gt;)" --> GetPage["GET /pages/12345"]
     GetPage --> Update["PUT /pages/12345<br/>version: current + 1"]
@@ -402,7 +410,7 @@ flowchart TD
 
     HasForce -- "Não" --> Create["POST /pages<br/>cria nova página"]
 
-    Update --> Images{"Tem imagens locais?"}
+    Update --> Images{"Tem imagens locais<br/>ou SVGs do mermaid?"}
     UpdateByTitle --> Images
     Create --> Images
     Images -- "Sim" --> Upload["Upload attachments<br/>POST /content/&lt;id&gt;/child/attachment"]
@@ -614,6 +622,8 @@ Caminhos relativos são resolvidos a partir do diretório do arquivo Markdown. I
 
 - Go 1.25+
 - Make (opcional, para usar os targets)
+- `mmdc` ([@mermaid-js/mermaid-cli](https://github.com/mermaid-js/mermaid-cli)) — necessário apenas para publish com blocos mermaid. Instale via `npm install -g @mermaid-js/mermaid-cli` ou use a imagem Docker que já inclui tudo.
+- Docker (opcional, para build da imagem ou uso via `docker run`)
 
 ### Comandos do Makefile
 
