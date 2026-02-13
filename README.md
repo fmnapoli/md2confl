@@ -344,6 +344,25 @@ Output de erro:
 
 > **Segurança:** prefira `CONFLUENCE_TOKEN` via variável de ambiente. Passar o token via `--token` na linha de comando o expõe no histórico do shell e na lista de processos (`ps`). O md2confl emite um warning no stderr quando detecta que o token foi passado via flag.
 
+### Como obter o API token da Atlassian
+
+O `md2confl` usa autenticação Basic (email + API token) para acessar a API do Confluence Cloud. Siga os passos abaixo para gerar seu token:
+
+1. Acesse [https://id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens)
+2. Clique em **Create API token**
+3. Dê um nome descritivo (ex: `md2confl`)
+4. Clique em **Create** e copie o token gerado
+
+> **Importante:** o token é exibido apenas uma vez. Se perder, será necessário revogar e criar um novo.
+
+Configure o token como variável de ambiente:
+
+```bash
+export CONFLUENCE_TOKEN="seu-api-token"
+```
+
+Para uso em CI/CD, armazene o token como secret (ex: GitHub Actions, GitLab CI) e injete via variável de ambiente. Nunca commite tokens em repositórios.
+
 **Exemplo com env vars:**
 
 ```bash
