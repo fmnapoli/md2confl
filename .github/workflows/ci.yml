@@ -21,6 +21,9 @@ jobs:
       - run: make license-check
       - run: go mod tidy && git diff --exit-code go.mod go.sum
       - run: make test-coverage
+      - uses: codecov/codecov-action@v5
+        with:
+          files: coverage.out
 
   release:
     runs-on: ubuntu-latest

@@ -1,6 +1,7 @@
 # md2confl
 
 [![CI](https://github.com/fmnapoli/md2confl/actions/workflows/ci.yml/badge.svg)](https://github.com/fmnapoli/md2confl/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/fmnapoli/md2confl/branch/main/graph/badge.svg)](https://codecov.io/gh/fmnapoli/md2confl)
 [![Go Report Card](https://goreportcard.com/badge/github.com/fmnapoli/md2confl)](https://goreportcard.com/report/github.com/fmnapoli/md2confl)
 [![Go Reference](https://pkg.go.dev/badge/github.com/fmnapoli/md2confl.svg)](https://pkg.go.dev/github.com/fmnapoli/md2confl)
 [![License](https://img.shields.io/github/license/fmnapoli/md2confl)](LICENSE)
