@@ -7,6 +7,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/fmnapoli/md2confl/adf"
 	"github.com/fmnapoli/md2confl/confluence"
+	"github.com/fmnapoli/md2confl/mermaid"
 	"github.com/fmnapoli/md2confl/parser"
 )
 
@@ -275,6 +277,18 @@ func (app *appEnv) handlePublish(path string, source, adfJSON []byte, doc *adf.D
 	})
 	if err != nil {
 		return &apiError{message: err.Error(), exitCode: 1}
+	}
+
+	// Render mermaid diagrams to SVG before publishing.
+	rendered, err := renderMermaidBlocks(doc)
+	if err != nil {
+		return err
+	}
+	if rendered {
+		adfJSON, err = json.MarshalIndent(doc, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshaling ADF after mermaid rendering: %w", err)
+		}
 	}
 
 	// Resolve space ID
@@ -751,4 +765,96 @@ func patchNode(node *adf.Node, attachmentMap map[string]string) {
 	for i := range node.Content {
 		patchNode(&node.Content[i], attachmentMap)
 	}
+}
+
+// mermaidBlock holds information about a mermaid codeBlock in the ADF tree.
+type mermaidBlock struct {
+	index  int        // position in parent's Content slice
+	parent *[]adf.Node // pointer to parent's Content slice
+	source string     // the mermaid diagram source text
+}
+
+// findMermaidBlocks walks the ADF document and returns all codeBlocks with language "mermaid".
+func findMermaidBlocks(doc *adf.Document) []mermaidBlock {
+	var blocks []mermaidBlock
+	collectMermaidBlocks(&doc.Content, &blocks)
+	return blocks
+}
+
+func collectMermaidBlocks(nodes *[]adf.Node, blocks *[]mermaidBlock) {
+	for i := range *nodes {
+		node := &(*nodes)[i]
+		if node.Type == "codeBlock" {
+			if lang, ok := node.Attrs["language"].(string); ok && lang == "mermaid" {
+				source := extractCodeBlockText(node)
+				*blocks = append(*blocks, mermaidBlock{
+					index:  i,
+					parent: nodes,
+					source: source,
+				})
+			}
+		}
+		if len(node.Content) > 0 {
+			collectMermaidBlocks(&node.Content, blocks)
+		}
+	}
+}
+
+func extractCodeBlockText(node *adf.Node) string {
+	var sb strings.Builder
+	for _, child := range node.Content {
+		if child.Type == "text" {
+			sb.WriteString(child.Text)
+		}
+	}
+	return sb.String()
+}
+
+// patchMermaidBlock replaces a mermaid codeBlock with a mediaSingle > media node
+// pointing to the local SVG file path.
+func patchMermaidBlock(block mermaidBlock, svgPath string) {
+	(*block.parent)[block.index] = adf.Node{
+		Type:  "mediaSingle",
+		Attrs: map[string]any{"layout": "center"},
+		Content: []adf.Node{
+			{
+				Type: "media",
+				Attrs: map[string]any{
+					"type": "external",
+					"url":  svgPath,
+				},
+			},
+		},
+	}
+}
+
+// renderMermaidBlocks renders all mermaid codeBlocks in the ADF document to SVG
+// and patches them in-place. Returns true if any blocks were rendered.
+func renderMermaidBlocks(doc *adf.Document) (bool, error) {
+	blocks := findMermaidBlocks(doc)
+	if len(blocks) == 0 {
+		return false, nil
+	}
+
+	if err := mermaid.EnsureAvailable(); err != nil {
+		return false, err
+	}
+
+	tempDir, err := os.MkdirTemp("", "md2confl-mermaid-*")
+	if err != nil {
+		return false, fmt.Errorf("creating temp dir for mermaid: %w", err)
+	}
+	// Note: caller is responsible for cleanup via the tempDir embedded in SVG paths,
+	// but we rely on OS cleanup of /tmp. The files need to survive until upload.
+
+	renderer := &mermaid.Renderer{OutputDir: tempDir}
+	for _, block := range blocks {
+		svgPath, err := renderer.Render(context.Background(), []byte(block.source))
+		if err != nil {
+			return false, fmt.Errorf("rendering mermaid diagram: %w", err)
+		}
+		patchMermaidBlock(block, svgPath)
+	}
+
+	return true, nil
 }

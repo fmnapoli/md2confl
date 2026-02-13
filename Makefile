@@ -4,7 +4,7 @@ PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
 LDFLAGS := -X main.Version=$(VERSION)
 LICENSE_HEADER := // Copyright 2026 md2confl contributors\n// SPDX-License-Identifier: Apache-2.0
 
-.PHONY: build test lint cross-compile license-check clean
+.PHONY: build test lint cross-compile license-check docker clean
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o bin/$(BINARY) ./cmd/md2confl
@@ -34,6 +34,9 @@ license-check:
 	done; \
 	if [ "$$fail" -eq 1 ]; then exit 1; fi; \
 	echo "All Go files have license headers"
+
+docker:
+	docker build -t md2confl:$(VERSION) .
 
 clean:
 	rm -rf bin/
