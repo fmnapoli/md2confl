@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/fmnapoli/md2confl/adf"
@@ -1521,7 +1522,7 @@ documents:
 	if !strings.Contains(stderr.String(), "would resolve") {
 		t.Errorf("expected dry-run link preview message, got %q", stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "1 inter-document link(s)") {
+	if !strings.Contains(stderr.String(), "count=1") {
 		t.Errorf("expected link count in preview, got %q", stderr.String())
 	}
 }
@@ -1703,5 +1704,243 @@ func TestCountResolvableLinks_WithRepoURL(t *testing.T) {
 	count := countResolvableLinks(doc, "/repo", linkMap, "https://github.com/user/repo/blob/main/", "/repo")
 	if count != 2 {
 		t.Errorf("expected 2 resolvable links (1 linkMap + 1 repoURL), got %d", count)
+	}
+}
+
+func TestAdfUnchanged(t *testing.T) {
+	tests := []struct {
+		name     string
+		existing string
+		newADF   string
+		want     bool
+	}{
+		{
+			name:     "same content different formatting",
+			existing: `{"type":"doc","version":1,"content":[]}`,
+			newADF:   "{\n  \"type\": \"doc\",\n  \"version\": 1,\n  \"content\": []\n}",
+			want:     true,
+		},
+		{
+			name:     "different content",
+			existing: `{"type":"doc","version":1,"content":[{"type":"paragraph"}]}`,
+			newADF:   `{"type":"doc","version":1,"content":[]}`,
+			want:     false,
+		},
+		{
+			name:     "empty existing",
+			existing: "",
+			newADF:   `{"type":"doc"}`,
+			want:     false,
+		},
+		{
+			name:     "invalid JSON in existing",
+			existing: `{not valid json`,
+			newADF:   `{"type":"doc"}`,
+			want:     false,
+		},
+		{
+			name:     "invalid JSON in new",
+			existing: `{"type":"doc"}`,
+			newADF:   `{not valid json`,
+			want:     false,
+		},
+		{
+			name:     "both identical",
+			existing: `{"type":"doc","version":1}`,
+			newADF:   `{"type":"doc","version":1}`,
+			want:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := adfUnchanged(tt.existing, tt.newADF)
+			if got != tt.want {
+				t.Errorf("adfUnchanged() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRun_ConcurrencyValidation(t *testing.T) {
+	dir := t.TempDir()
+	inputFile := filepath.Join(dir, "test.md")
+	if err := os.WriteFile(inputFile, []byte("# Hello\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name       string
+		args       []string
+		wantCode   int
+	}{
+		{
+			name:     "concurrency 0 fails",
+			args:     []string{"--input", inputFile, "--concurrency", "0"},
+			wantCode: 1,
+		},
+		{
+			name:     "concurrency 17 fails",
+			args:     []string{"--input", inputFile, "--concurrency", "17"},
+			wantCode: 1,
+		},
+		{
+			name:     "concurrency 4 succeeds",
+			args:     []string{"--input", inputFile, "--concurrency", "4"},
+			wantCode: 0,
+		},
+		{
+			name:     "concurrency 1 succeeds",
+			args:     []string{"--input", inputFile, "--concurrency", "1"},
+			wantCode: 0,
+		},
+		{
+			name:     "concurrency 16 succeeds",
+			args:     []string{"--input", inputFile, "--concurrency", "16"},
+			wantCode: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := Run(tt.args, "test", &stdout, &stderr)
+			if code != tt.wantCode {
+				t.Errorf("expected exit code %d, got %d; stderr: %s", tt.wantCode, code, stderr.String())
+			}
+		})
+	}
+}
+
+func TestRun_VerboseFlag(t *testing.T) {
+	dir := t.TempDir()
+
+	// Use a multi-doc config with inter-document links so that
+	// the dry-run path produces logger.Info output we can observe.
+	cfgPath := writeConfigAndDocs(t, dir, `url: https://site.atlassian.net
+space: DEVOPS
+email: user@example.com
+documents:
+  - input: doc1.md
+  - input: doc2.md
+`, map[string]string{
+		"doc1.md": "# Doc 1\n\nSee [doc2](doc2.md) for details.\n",
+		"doc2.md": "# Doc 2\n\nContent here.\n",
+	})
+
+	t.Setenv("CONFLUENCE_TOKEN", "fake-token")
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"--config", cfgPath, "--dry-run", "--verbose"}, "test", &stdout, &stderr)
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d; stderr: %s", code, stderr.String())
+	}
+
+	// With --verbose, the logger is set to DEBUG level, so all INFO+ logs appear.
+	// The dry-run multi-doc path emits INFO-level "would resolve" messages.
+	stderrStr := stderr.String()
+	if !strings.Contains(stderrStr, "level=INFO") {
+		t.Errorf("expected INFO-level log output with --verbose, got %q", stderrStr)
+	}
+}
+
+func TestAddWarning(t *testing.T) {
+	app := &appEnv{}
+	w := make([]string, 0)
+	app.warnings = &w
+	app.warningsMu = &sync.Mutex{}
+
+	app.addWarning("first warning")
+	app.addWarning("second warning")
+	app.addWarning("third warning")
+
+	if len(*app.warnings) != 3 {
+		t.Fatalf("expected 3 warnings, got %d", len(*app.warnings))
+	}
+	if (*app.warnings)[0] != "first warning" {
+		t.Errorf("expected 'first warning', got %q", (*app.warnings)[0])
+	}
+	if (*app.warnings)[1] != "second warning" {
+		t.Errorf("expected 'second warning', got %q", (*app.warnings)[1])
+	}
+	if (*app.warnings)[2] != "third warning" {
+		t.Errorf("expected 'third warning', got %q", (*app.warnings)[2])
+	}
+}
+
+func TestAddWarning_ThreadSafe(t *testing.T) {
+	app := &appEnv{}
+	w := make([]string, 0)
+	app.warnings = &w
+	app.warningsMu = &sync.Mutex{}
+
+	var wg sync.WaitGroup
+	for i := range 100 {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			app.addWarning(fmt.Sprintf("warning %d", n))
+		}(i)
+	}
+	wg.Wait()
+
+	if len(*app.warnings) != 100 {
+		t.Errorf("expected 100 warnings, got %d", len(*app.warnings))
+	}
+}
+
+func TestPrintWarningSummary(t *testing.T) {
+	tests := []struct {
+		name     string
+		warnings []string
+		wantOut  string
+		wantEmpty bool
+	}{
+		{
+			name:     "with warnings",
+			warnings: []string{"image not found", "upload failed"},
+			wantOut:  "2 warning(s):\n  - image not found\n  - upload failed\n",
+		},
+		{
+			name:      "no warnings",
+			warnings:  []string{},
+			wantEmpty: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			app := &appEnv{stderr: &stderr}
+			w := make([]string, len(tt.warnings))
+			copy(w, tt.warnings)
+			app.warnings = &w
+			app.warningsMu = &sync.Mutex{}
+
+			app.printWarningSummary()
+
+			output := stderr.String()
+			if tt.wantEmpty {
+				if output != "" {
+					t.Errorf("expected no output for empty warnings, got %q", output)
+				}
+			} else {
+				if !strings.Contains(output, tt.wantOut) {
+					t.Errorf("expected output containing %q, got %q", tt.wantOut, output)
+				}
+			}
+		})
+	}
+}
+
+func TestPrintWarningSummary_NilWarnings(t *testing.T) {
+	var stderr bytes.Buffer
+	app := &appEnv{stderr: &stderr, warnings: nil}
+
+	// Should not panic when warnings is nil
+	app.printWarningSummary()
+
+	if stderr.String() != "" {
+		t.Errorf("expected no output for nil warnings, got %q", stderr.String())
 	}
 }

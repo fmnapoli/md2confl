@@ -8,7 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestEnsureAvailable_NotFound(t *testing.T) {
@@ -97,5 +99,62 @@ func TestRender_DifferentSourcesDifferentPaths(t *testing.T) {
 
 	if path1 == path2 {
 		t.Error("expected different paths for different sources")
+	}
+}
+
+// writeFakeMMDC creates a fake "mmdc" executable shell script in the given
+// directory with the provided body, and returns the directory path.
+func writeFakeMMDC(t *testing.T, body string) string {
+	t.Helper()
+	dir := t.TempDir()
+	script := filepath.Join(dir, "mmdc")
+	content := "#!/bin/sh\n" + body
+	if err := os.WriteFile(script, []byte(content), 0755); err != nil {
+		t.Fatalf("writing fake mmdc: %v", err)
+	}
+	return dir
+}
+
+func TestEnsureAvailable_Found(t *testing.T) {
+	dir := writeFakeMMDC(t, "exit 0\n")
+	t.Setenv("PATH", dir)
+
+	if err := EnsureAvailable(); err != nil {
+		t.Fatalf("expected EnsureAvailable() to succeed, got: %v", err)
+	}
+}
+
+func TestRender_Timeout(t *testing.T) {
+	dir := writeFakeMMDC(t, "sleep 5\n")
+	t.Setenv("PATH", dir+":/usr/bin:/bin")
+
+	outDir := t.TempDir()
+	r := &Renderer{OutputDir: outDir}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	_, err := r.Render(ctx, []byte("graph TD;\n    A-->B;"))
+	if err == nil {
+		t.Fatal("expected error due to timeout, got nil")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("expected error to contain %q, got: %v", "timed out", err)
+	}
+}
+
+func TestRender_Failure(t *testing.T) {
+	dir := writeFakeMMDC(t, "echo 'error: bad diagram' >&2\nexit 1\n")
+	t.Setenv("PATH", dir+":/usr/bin:/bin")
+
+	outDir := t.TempDir()
+	r := &Renderer{OutputDir: outDir}
+
+	_, err := r.Render(context.Background(), []byte("graph TD;\n    A-->B;"))
+	if err == nil {
+		t.Fatal("expected error from failed mmdc, got nil")
+	}
+	if !strings.Contains(err.Error(), "mmdc failed") {
+		t.Errorf("expected error to contain %q, got: %v", "mmdc failed", err)
 	}
 }

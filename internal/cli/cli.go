@@ -14,10 +14,14 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/fmnapoli/md2confl/adf"
 	"github.com/fmnapoli/md2confl/confluence"
@@ -50,24 +54,36 @@ type appEnv struct {
 	jsonOutput     bool
 	renderMermaid  bool
 	showVersion    bool
+	verbose        bool
+	concurrency    int
 	configPath  string
 	repoURL     string
 	repoRoot    string
-	config      *Config
-	docResults  map[string]*docPublishResult // abs input path → result
+	config       *Config
+	docResults   map[string]*docPublishResult // abs input path → result
+	docResultsMu *sync.Mutex
+	warnings     *[]string
+	warningsMu   *sync.Mutex
 
-	version string
-	stdout  io.Writer
-	stderr  io.Writer
+	version  string
+	stdout   io.Writer
+	stderr   io.Writer
+	outputMu *sync.Mutex
+	logger   *slog.Logger
 }
 
 // Run parses CLI arguments and executes the requested operation.
 // Returns an exit code: 0 for success, 1 for user error, 2 for API error.
 func Run(args []string, version string, stdout, stderr io.Writer) int {
+	warnings := make([]string, 0)
+	outputMu := &sync.Mutex{}
 	app := &appEnv{
-		version: version,
-		stdout:  stdout,
-		stderr:  stderr,
+		version:    version,
+		stdout:     stdout,
+		stderr:     stderr,
+		outputMu:   outputMu,
+		warnings:   &warnings,
+		warningsMu: &sync.Mutex{},
 	}
 
 	if err := app.fromArgs(args); err != nil {
@@ -78,6 +94,13 @@ func Run(args []string, version string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	// Configure structured logger
+	logLevel := slog.LevelInfo
+	if app.verbose {
+		logLevel = slog.LevelDebug
+	}
+	app.logger = slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: logLevel}))
+
 	if err := app.run(); err != nil {
 		code := 1
 		var apiErr *apiError
@@ -87,8 +110,10 @@ func Run(args []string, version string, stdout, stderr io.Writer) int {
 		} else {
 			printError(stderr, err.Error(), "", code, app.jsonOutput)
 		}
+		app.printWarningSummary()
 		return code
 	}
+	app.printWarningSummary()
 	return 0
 }
 
@@ -119,6 +144,8 @@ func (app *appEnv) fromArgs(args []string) error {
 	fs.BoolVar(&app.renderMermaid, "mermaid", false, "Render mermaid diagrams to SVG (always enabled with --publish)")
 	fs.BoolVar(&app.jsonOutput, "json", false, "Output in JSON format")
 	fs.BoolVar(&app.showVersion, "version", false, "Show version")
+	fs.BoolVar(&app.verbose, "verbose", false, "Enable verbose debug logging")
+	fs.IntVar(&app.concurrency, "concurrency", 4, "Max parallel operations (1-16)")
 	fs.StringVar(&app.configPath, "config", "", "Path to config file (default: auto-detect .md2confl.yml)")
 	fs.StringVar(&app.repoURL, "repo-url", "", "Repository base URL for resolving non-Markdown links (auto-detected from git)")
 
@@ -181,6 +208,7 @@ func (app *appEnv) fromArgs(args []string) error {
 		}
 		app.config = cfg
 		app.configPath = found
+		// Logger not initialized yet; use stderr directly for pre-init messages.
 		fmt.Fprintf(app.stderr, "Using config: %s\n", found)
 	}
 
@@ -190,6 +218,10 @@ func (app *appEnv) fromArgs(args []string) error {
 	// --input is optional when config has documents
 	if app.input == "" && (app.config == nil || len(app.config.Documents) == 0) {
 		return fmt.Errorf("--input is required (or define documents in config file)")
+	}
+
+	if app.concurrency < 1 || app.concurrency > 16 {
+		return fmt.Errorf("--concurrency must be between 1 and 16")
 	}
 
 	if app.output != "" && app.publish {
@@ -221,6 +253,7 @@ func (app *appEnv) fromArgs(args []string) error {
 	if app.token == "" {
 		app.token = os.Getenv("CONFLUENCE_TOKEN")
 	} else if explicitFlags["token"] {
+		// Logger not initialized yet; use stderr directly for pre-init messages.
 		fmt.Fprintf(app.stderr, "Warning: passing API token via CLI flag is insecure; prefer CONFLUENCE_TOKEN env var\n")
 	}
 
@@ -301,7 +334,8 @@ func (app *appEnv) runFile(path string) error {
 			return err
 		}
 		if rendered {
-			fmt.Fprintf(app.stderr, "Rendered %d mermaid diagram(s) to SVG\n", countMermaidSVGs(doc))
+			count := countMermaidSVGs(doc)
+			app.logger.Info("Rendered mermaid diagrams", "count", count)
 		}
 	}
 
@@ -327,6 +361,9 @@ func (app *appEnv) runFile(path string) error {
 }
 
 func (app *appEnv) handleDryRun(path string, adfJSON []byte, doc *adf.Document) error {
+	unlock := app.lockOutput()
+	defer unlock()
+
 	if app.publish {
 		// Show simulation when publish flags are present
 		title := app.deriveTitle(path, nil)
@@ -344,10 +381,10 @@ func (app *appEnv) handleDryRun(path string, adfJSON []byte, doc *adf.Document) 
 	if app.docResults != nil && app.output == "" {
 		absPath, _ := filepath.Abs(path)
 		title := app.deriveTitle(path, nil)
-		app.docResults[absPath] = &docPublishResult{
+		app.addDocResult(absPath, &docPublishResult{
 			title:    title,
 			finalADF: doc,
-		}
+		})
 	}
 
 	fmt.Fprintln(app.stdout, string(adfJSON))
@@ -358,6 +395,8 @@ func (app *appEnv) handleFileOutput(path string, adfJSON []byte) error {
 	if err := os.WriteFile(app.output, append(adfJSON, '\n'), 0644); err != nil {
 		return fmt.Errorf("writing output: %w", err)
 	}
+	unlock := app.lockOutput()
+	defer unlock()
 	printResult(app.stdout, Result{
 		Status: "success",
 		Action: "converted",
@@ -392,6 +431,7 @@ func (app *appEnv) handlePublish(path string, source, adfJSON []byte, doc *adf.D
 	if err != nil {
 		return &apiError{message: err.Error(), exitCode: 1}
 	}
+	client.SetLogger(app.logger)
 
 	// Resolve space ID
 	spaceID, err := client.ResolveSpaceID(app.space)
@@ -411,9 +451,21 @@ func (app *appEnv) handlePublish(path string, source, adfJSON []byte, doc *adf.D
 		if err != nil {
 			return app.wrapConfluenceError(err)
 		}
-		result, err = client.UpdatePage(pageID, title, adfStr, page.Version.Number)
-		if err != nil {
-			return app.wrapConfluenceError(err)
+		if adfUnchanged(page.Body.AtlasDocFormat.Value, adfStr) {
+			app.logger.Info("Skipped (unchanged)", "title", title)
+			result = &confluence.PublishResult{
+				PageID:   page.ID,
+				PageURL:  page.Links.Base + page.Links.WebUI,
+				Title:    title,
+				SpaceKey: app.space,
+				Version:  page.Version.Number,
+				Action:   "skipped",
+			}
+		} else {
+			result, err = client.UpdatePage(pageID, title, adfStr, page.Version.Number)
+			if err != nil {
+				return app.wrapConfluenceError(err)
+			}
 		}
 	} else if app.force {
 		// Find by title and update, or create
@@ -422,9 +474,25 @@ func (app *appEnv) handlePublish(path string, source, adfJSON []byte, doc *adf.D
 			return app.wrapConfluenceError(err)
 		}
 		if existing != nil {
-			result, err = client.UpdatePage(existing.ID, title, adfStr, existing.Version.Number)
+			page, err := client.GetPage(existing.ID)
 			if err != nil {
 				return app.wrapConfluenceError(err)
+			}
+			if adfUnchanged(page.Body.AtlasDocFormat.Value, adfStr) {
+				app.logger.Info("Skipped (unchanged)", "title", title)
+				result = &confluence.PublishResult{
+					PageID:   page.ID,
+					PageURL:  page.Links.Base + page.Links.WebUI,
+					Title:    title,
+					SpaceKey: app.space,
+					Version:  page.Version.Number,
+					Action:   "skipped",
+				}
+			} else {
+				result, err = client.UpdatePage(existing.ID, title, adfStr, existing.Version.Number)
+				if err != nil {
+					return app.wrapConfluenceError(err)
+				}
 			}
 		} else {
 			result, err = client.CreatePage(spaceID, title, app.parentID, adfStr)
@@ -440,27 +508,38 @@ func (app *appEnv) handlePublish(path string, source, adfJSON []byte, doc *adf.D
 		}
 	}
 
-	// Upload local images as attachments and patch ADF
+	// Upload local images as attachments and patch ADF (parallel)
 	localImages := findLocalImages(doc)
 	if len(localImages) > 0 {
 		baseDir := filepath.Dir(path)
 		attachmentMap := map[string]string{} // url -> attachment ID
+		var attMu sync.Mutex
+		g, _ := errgroup.WithContext(context.Background())
+		g.SetLimit(8)
 		for _, imgURL := range localImages {
-			imgPath := imgURL
-			if !filepath.IsAbs(imgURL) {
-				imgPath = filepath.Join(baseDir, imgURL)
-			}
-			if _, err := os.Stat(imgPath); err != nil {
-				fmt.Fprintf(app.stderr, "Warning: local image not found: %s\n", imgPath)
-				continue
-			}
-			attID, err := client.UploadAttachment(result.PageID, imgPath)
-			if err != nil {
-				fmt.Fprintf(app.stderr, "Warning: failed to upload %s: %v\n", imgURL, err)
-				continue
-			}
-			attachmentMap[imgURL] = attID
+			g.Go(func() error {
+				imgPath := imgURL
+				if !filepath.IsAbs(imgURL) {
+					imgPath = filepath.Join(baseDir, imgURL)
+				}
+				if _, err := os.Stat(imgPath); err != nil {
+					app.logger.Warn("Local image not found", "path", imgPath)
+					app.addWarning(fmt.Sprintf("local image not found: %s", imgPath))
+					return nil // non-fatal
+				}
+				attID, err := client.UploadAttachment(result.PageID, imgPath)
+				if err != nil {
+					app.logger.Warn("Failed to upload image", "image", imgURL, "error", err)
+					app.addWarning(fmt.Sprintf("failed to upload %s: %v", imgURL, err))
+					return nil // non-fatal
+				}
+				attMu.Lock()
+				attachmentMap[imgURL] = attID
+				attMu.Unlock()
+				return nil
+			})
 		}
+		_ = g.Wait()
 		if len(attachmentMap) > 0 {
 			patchLocalImages(doc, attachmentMap, result.PageID)
 			patchedJSON, err := json.MarshalIndent(doc, "", "  ")
@@ -480,30 +559,36 @@ func (app *appEnv) handlePublish(path string, source, adfJSON []byte, doc *adf.D
 	// Save result for inter-document link resolution (second pass)
 	if app.docResults != nil {
 		absPath, _ := filepath.Abs(path)
-		app.docResults[absPath] = &docPublishResult{
+		app.addDocResult(absPath, &docPublishResult{
 			pageID:   result.PageID,
 			pageURL:  result.PageURL,
 			title:    result.Title,
 			finalADF: doc,
-		}
+		})
 	}
 
 	// Write page-id marker back to file if requested
 	if app.writeMarker && result.PageID != "" {
 		if err := app.writePageIDMarker(path, source, result.PageID); err != nil {
-			fmt.Fprintf(app.stderr, "Warning: could not write page-id marker: %v\n", err)
+			app.logger.Warn("Could not write page-id marker", "error", err)
 		}
 	}
 
-	printResult(app.stdout, Result{
-		Status:   "success",
-		PageID:   result.PageID,
-		PageURL:  result.PageURL,
-		Title:    result.Title,
-		SpaceKey: result.SpaceKey,
-		Action:   result.Action,
-		Version:  result.Version,
-	}, app.jsonOutput)
+	app.logger.Info("Published", "title", result.Title, "action", result.Action, "pageID", result.PageID)
+
+	func() {
+		unlock := app.lockOutput()
+		defer unlock()
+		printResult(app.stdout, Result{
+			Status:   "success",
+			PageID:   result.PageID,
+			PageURL:  result.PageURL,
+			Title:    result.Title,
+			SpaceKey: result.SpaceKey,
+			Action:   result.Action,
+			Version:  result.Version,
+		}, app.jsonOutput)
+	}()
 
 	return nil
 }
@@ -568,6 +653,7 @@ func (app *appEnv) runDir() error {
 	if err != nil {
 		return &apiError{message: err.Error(), exitCode: 1}
 	}
+	client.SetLogger(app.logger)
 
 	spaceID, err := client.ResolveSpaceID(app.space)
 	if err != nil {
@@ -579,6 +665,7 @@ func (app *appEnv) runDir() error {
 	standaloneDir := app.docResults == nil
 	if standaloneDir {
 		app.docResults = make(map[string]*docPublishResult)
+		app.docResultsMu = &sync.Mutex{}
 	}
 
 	if err := app.publishDirTree(client, spaceID, app.parentID, tree, true); err != nil {
@@ -741,26 +828,30 @@ func (app *appEnv) publishDirTree(client *confluence.Client, spaceID, parentID s
 		}
 	}
 
-	printResult(app.stdout, Result{
-		Status: "success", PageID: dirResult.PageID, PageURL: dirResult.PageURL,
-		Title: dirResult.Title, SpaceKey: dirResult.SpaceKey, Action: dirResult.Action, Version: dirResult.Version,
-	}, app.jsonOutput)
+	func() {
+		unlock := app.lockOutput()
+		defer unlock()
+		printResult(app.stdout, Result{
+			Status: "success", PageID: dirResult.PageID, PageURL: dirResult.PageURL,
+			Title: dirResult.Title, SpaceKey: dirResult.SpaceKey, Action: dirResult.Action, Version: dirResult.Version,
+		}, app.jsonOutput)
+	}()
 
 	// Save result for inter-document link resolution
 	if app.docResults != nil && pagePath != "" {
 		absPath, _ := filepath.Abs(pagePath)
-		app.docResults[absPath] = &docPublishResult{
+		app.addDocResult(absPath, &docPublishResult{
 			pageID:   dirResult.PageID,
 			pageURL:  dirResult.PageURL,
 			title:    dirResult.Title,
 			finalADF: pageDoc,
-		}
+		})
 	}
 
 	// Write marker for README if requested
 	if app.writeMarker && tree.Readme != nil && dirResult.PageID != "" {
 		if err := app.writePageIDMarker(tree.Readme.Path, tree.Readme.Content, dirResult.PageID); err != nil {
-			fmt.Fprintf(app.stderr, "Warning: could not write page-id marker: %v\n", err)
+			app.logger.Warn("Could not write page-id marker", "error", err)
 		}
 	}
 
@@ -806,7 +897,7 @@ func (app *appEnv) publishDirTree(client *confluence.Client, spaceID, parentID s
 			}
 			if app.writeMarker {
 				if err := app.writePageIDMarker(f.Path, f.Content, childResult.PageID); err != nil {
-					fmt.Fprintf(app.stderr, "Warning: could not write page-id marker: %v\n", err)
+					app.logger.Warn("Could not write page-id marker", "error", err)
 				}
 			}
 		} else {
@@ -816,25 +907,29 @@ func (app *appEnv) publishDirTree(client *confluence.Client, spaceID, parentID s
 			}
 			if app.writeMarker {
 				if err := app.writePageIDMarker(f.Path, f.Content, childResult.PageID); err != nil {
-					fmt.Fprintf(app.stderr, "Warning: could not write page-id marker: %v\n", err)
+					app.logger.Warn("Could not write page-id marker", "error", err)
 				}
 			}
 		}
 
-		printResult(app.stdout, Result{
-			Status: "success", PageID: childResult.PageID, PageURL: childResult.PageURL,
-			Title: childResult.Title, SpaceKey: childResult.SpaceKey, Action: childResult.Action, Version: childResult.Version,
-		}, app.jsonOutput)
+		func() {
+			unlock := app.lockOutput()
+			defer unlock()
+			printResult(app.stdout, Result{
+				Status: "success", PageID: childResult.PageID, PageURL: childResult.PageURL,
+				Title: childResult.Title, SpaceKey: childResult.SpaceKey, Action: childResult.Action, Version: childResult.Version,
+			}, app.jsonOutput)
+		}()
 
 		// Save result for inter-document link resolution
 		if app.docResults != nil {
 			absPath, _ := filepath.Abs(f.Path)
-			app.docResults[absPath] = &docPublishResult{
+			app.addDocResult(absPath, &docPublishResult{
 				pageID:   childResult.PageID,
 				pageURL:  childResult.PageURL,
 				title:    childTitle,
 				finalADF: doc,
-			}
+			})
 		}
 	}
 
@@ -1009,12 +1104,32 @@ func renderMermaidBlocks(doc *adf.Document) (bool, error) {
 	// but we rely on OS cleanup of /tmp. The files need to survive until upload.
 
 	renderer := &mermaid.Renderer{OutputDir: tempDir}
-	for _, block := range blocks {
-		svgPath, err := renderer.Render(context.Background(), []byte(block.source))
-		if err != nil {
-			return false, fmt.Errorf("rendering mermaid diagram: %w", err)
-		}
-		patchMermaidBlock(block, svgPath)
+
+	// Render all blocks in parallel (limit 2 — mmdc is heavy/Chromium)
+	type renderResult struct {
+		index   int
+		svgPath string
+	}
+	results := make([]renderResult, len(blocks))
+	g, _ := errgroup.WithContext(context.Background())
+	g.SetLimit(2)
+	for i, block := range blocks {
+		g.Go(func() error {
+			svgPath, err := renderer.Render(context.Background(), []byte(block.source))
+			if err != nil {
+				return fmt.Errorf("rendering mermaid diagram: %w", err)
+			}
+			results[i] = renderResult{index: i, svgPath: svgPath}
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return false, err
+	}
+
+	// Patch sequentially after all renders complete
+	for i, block := range blocks {
+		patchMermaidBlock(block, results[i].svgPath)
 	}
 
 	return true, nil
@@ -1054,7 +1169,10 @@ func (app *appEnv) resolveInterDocLinksFromResults() error {
 	if err != nil {
 		return err
 	}
+	client.SetLogger(app.logger)
 
+	g, _ := errgroup.WithContext(context.Background())
+	g.SetLimit(4)
 	for absPath, res := range app.docResults {
 		if res.finalADF == nil {
 			continue
@@ -1071,14 +1189,16 @@ func (app *appEnv) resolveInterDocLinksFromResults() error {
 			return fmt.Errorf("marshaling patched ADF for %q: %w", absPath, err)
 		}
 
-		if err := updatePageWithRetry(client, res.pageID, res.title, string(patchedJSON)); err != nil {
-			return fmt.Errorf("updating page %s with resolved links: %w", res.pageID, err)
-		}
-
-		fmt.Fprintf(app.stderr, "Resolved %d inter-document link(s) in %q\n", count, filepath.Base(absPath))
+		g.Go(func() error {
+			if err := updatePageWithRetry(client, res.pageID, res.title, string(patchedJSON)); err != nil {
+				return fmt.Errorf("updating page %s with resolved links: %w", res.pageID, err)
+			}
+			app.logger.Info("Resolved inter-document links", "count", count, "file", filepath.Base(absPath))
+			return nil
+		})
 	}
 
-	return nil
+	return g.Wait()
 }
 
 // previewInterDocLinksFromResults performs a read-only scan of all docResults
@@ -1103,7 +1223,7 @@ func (app *appEnv) previewInterDocLinksFromResults() {
 		baseDir := filepath.Dir(absPath)
 		count := countResolvableLinks(res.finalADF, baseDir, linkMap, app.repoURL, app.repoRoot)
 		if count > 0 {
-			fmt.Fprintf(app.stderr, "Dry-run: would resolve %d inter-document link(s) in %q\n", count, filepath.Base(absPath))
+			app.logger.Info("Dry-run: would resolve inter-document links", "count", count, "file", filepath.Base(absPath))
 		}
 	}
 }
@@ -1250,4 +1370,61 @@ func patchNodeLinks(node *adf.Node, baseDir string, linkMap map[string]string, r
 	}
 
 	return count
+}
+
+// adfUnchanged compares two ADF JSON strings for equivalence.
+// It normalizes by unmarshaling and re-marshaling to ignore formatting differences.
+func adfUnchanged(existing, newADF string) bool {
+	if existing == "" {
+		return false
+	}
+	var existingDoc, newDoc any
+	if err := json.Unmarshal([]byte(existing), &existingDoc); err != nil {
+		return false
+	}
+	if err := json.Unmarshal([]byte(newADF), &newDoc); err != nil {
+		return false
+	}
+	a, _ := json.Marshal(existingDoc)
+	b, _ := json.Marshal(newDoc)
+	return string(a) == string(b)
+}
+
+// lockOutput acquires the output mutex and returns an unlock function.
+func (app *appEnv) lockOutput() func() {
+	if app.outputMu != nil {
+		app.outputMu.Lock()
+		return app.outputMu.Unlock
+	}
+	return func() {}
+}
+
+// printWarningSummary prints a consolidated warning summary at the end of a run.
+func (app *appEnv) printWarningSummary() {
+	if app.warnings == nil || len(*app.warnings) == 0 {
+		return
+	}
+	w := *app.warnings
+	fmt.Fprintf(app.stderr, "\n%d warning(s):\n", len(w))
+	for _, msg := range w {
+		fmt.Fprintf(app.stderr, "  - %s\n", msg)
+	}
+}
+
+// addWarning appends a warning message for the end-of-run summary (thread-safe).
+func (app *appEnv) addWarning(msg string) {
+	if app.warningsMu != nil {
+		app.warningsMu.Lock()
+		defer app.warningsMu.Unlock()
+	}
+	*app.warnings = append(*app.warnings, msg)
+}
+
+// addDocResult records a publish result for inter-document link resolution (thread-safe).
+func (app *appEnv) addDocResult(absPath string, result *docPublishResult) {
+	if app.docResultsMu != nil {
+		app.docResultsMu.Lock()
+		defer app.docResultsMu.Unlock()
+	}
+	app.docResults[absPath] = result
 }

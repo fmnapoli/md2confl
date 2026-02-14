@@ -4,11 +4,14 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
+	"golang.org/x/sync/errgroup"
 	"gopkg.in/yaml.v3"
 )
 
@@ -172,13 +175,23 @@ func (app *appEnv) runDocuments(inputFilter string) error {
 
 	// Initialize shared map for collecting publish results
 	app.docResults = make(map[string]*docPublishResult)
+	var mu sync.Mutex
 
-	// First pass: publish all documents
+	// First pass: publish all documents (parallel)
+	app.docResultsMu = &mu
+	g, _ := errgroup.WithContext(context.Background())
+	g.SetLimit(app.concurrency)
 	for _, doc := range filtered {
-		clone := app.withDocumentConfig(doc)
-		if err := clone.run(); err != nil {
-			return fmt.Errorf("processing %q: %w", doc.Input, err)
-		}
+		g.Go(func() error {
+			clone := app.withDocumentConfig(doc)
+			if err := clone.run(); err != nil {
+				return fmt.Errorf("processing %q: %w", doc.Input, err)
+			}
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return err
 	}
 
 	// Second pass: resolve inter-document links across all published docs

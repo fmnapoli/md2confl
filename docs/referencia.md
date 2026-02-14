@@ -199,6 +199,8 @@ Output de erro:
 | `--write-marker` | `bool` | `false` | Após publicação bem-sucedida, escreve `<!-- confluence-page-id: XXXXX -->` no topo do arquivo Markdown fonte. Permite atualizações idempotentes futuras. Requer `--publish`. |
 | `--mermaid` | `bool` | `false` | Renderiza blocos mermaid para SVG via `mmdc`. Sempre ativo com `--publish`. Use com `--dry-run` ou `--output` para preview dos diagramas renderizados. |
 | `--json` | `bool` | `false` | Formata output (sucesso e erro) como JSON em vez de texto. Útil para integração com CI/CD. |
+| `--verbose` | `bool` | `false` | Ativa logging detalhado no stderr. Mostra requisições HTTP (URL, status, tempo), decisões de resolução de links, retry de API e timing. |
+| `--concurrency` | `int` | `4` | Número máximo de operações paralelas (documentos, uploads, mermaid). Intervalo: 1–16. |
 | `--version` | `bool` | `false` | Imprime a versão e sai com exit code 0. |
 
 ## Restrições entre flags
@@ -213,6 +215,7 @@ Output de erro:
 | `--publish` sem `--space` | Erro: espaço obrigatório |
 | `--publish` sem `--email` | Erro: email obrigatório (flag ou `CONFLUENCE_EMAIL`) |
 | `--publish` sem `--token` | Erro: token obrigatório (flag ou `CONFLUENCE_TOKEN`) |
+| `--concurrency 0` ou `> 16` | Erro: concurrency deve estar entre 1 e 16 |
 
 ## Exit codes
 

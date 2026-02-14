@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newTestServer(handler http.HandlerFunc) (*httptest.Server, *Client) {
@@ -25,6 +26,7 @@ func newTestServer(handler http.HandlerFunc) (*httptest.Server, *Client) {
 		Token:    "test-token",
 	})
 	client.httpClient = ts.Client()
+	client.initialDelay = time.Millisecond // fast retries for tests
 	return ts, client
 }
 

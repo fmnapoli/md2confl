@@ -115,6 +115,17 @@ graph LR
 3. Workflow roda `md2confl` via Docker com o config YAML
 4. Páginas no Confluence são criadas/atualizadas automaticamente
 
+## Pipeline de CI do md2confl
+
+O repositório md2confl usa um workflow CI (`.github/workflows/ci.yml`) que executa em cada push e pull request:
+
+1. **Lint** — `golangci-lint` com configuração padrão
+2. **Verificação de vulnerabilidades** — `govulncheck ./...` escaneia dependências contra o banco de vulnerabilidades do Go
+3. **Licenças** — verifica que todo arquivo `.go` tem header SPDX Apache-2.0
+4. **Tidy check** — `go mod tidy` + `git diff --exit-code` garante que `go.mod`/`go.sum` estão atualizados
+5. **Testes** — `make test-coverage` com race detector e enforcement de cobertura mínima
+6. **Release** — em tags `v*`, [GoReleaser](https://goreleaser.com/) gera binários para Linux, macOS e Windows (amd64/arm64)
+
 ## Variantes
 
 ### Com output JSON (para logs estruturados)

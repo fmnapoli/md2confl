@@ -13,12 +13,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
+	"strconv"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Config holds Confluence connection settings.
@@ -43,9 +46,12 @@ type PublishResult struct {
 
 // Client is a Confluence Cloud REST API client.
 type Client struct {
-	config     Config
-	httpClient *http.Client
-	baseAPIURL string
+	config       Config
+	httpClient   *http.Client
+	baseAPIURL   string
+	logger       *slog.Logger
+	maxRetries   int
+	initialDelay time.Duration
 }
 
 // NewClient creates a new Confluence API client.
@@ -55,10 +61,18 @@ func NewClient(cfg Config) (*Client, error) {
 	}
 	baseURL := strings.TrimRight(cfg.BaseURL, "/")
 	return &Client{
-		config:     cfg,
-		httpClient: &http.Client{},
-		baseAPIURL: baseURL + "/wiki/api/v2",
+		config:       cfg,
+		httpClient:   &http.Client{Timeout: 30 * time.Second},
+		baseAPIURL:   baseURL + "/wiki/api/v2",
+		logger:       slog.Default(),
+		maxRetries:   3,
+		initialDelay: 1 * time.Second,
 	}, nil
+}
+
+// SetLogger configures a custom logger for the client.
+func (c *Client) SetLogger(l *slog.Logger) {
+	c.logger = l
 }
 
 func (c *Client) authHeader() string {
@@ -72,7 +86,57 @@ func (c *Client) doRequest(req *http.Request) (*http.Response, error) {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", "application/json")
-	return c.httpClient.Do(req)
+
+	return c.doWithRetry(req)
+}
+
+// doWithRetry executes an HTTP request with retry on 429 (rate limit) and 5xx
+// (server error). Uses exponential backoff: 1s, 2s, 4s (max 3 attempts).
+// Respects the Retry-After header on 429 responses.
+func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
+	backoff := c.initialDelay
+
+	var resp *http.Response
+	var err error
+
+	for attempt := range c.maxRetries {
+		start := time.Now()
+		resp, err = c.httpClient.Do(req)
+		elapsed := time.Since(start)
+
+		if err != nil {
+			c.logger.Debug("API request failed", "method", req.Method, "url", req.URL.Path, "elapsed", elapsed, "error", err)
+			return nil, err
+		}
+
+		c.logger.Debug("API request", "method", req.Method, "url", req.URL.Path, "status", resp.StatusCode, "elapsed", elapsed)
+
+		// Don't retry on success or client errors (except 429)
+		if resp.StatusCode < 429 || (resp.StatusCode > 429 && resp.StatusCode < 500) {
+			return resp, nil
+		}
+
+		// Retryable: 429 or 5xx
+		if attempt == c.maxRetries-1 {
+			return resp, nil // last attempt, return as-is
+		}
+
+		wait := backoff
+		if resp.StatusCode == 429 {
+			if ra := resp.Header.Get("Retry-After"); ra != "" {
+				if secs, err := strconv.Atoi(ra); err == nil && secs > 0 {
+					wait = time.Duration(secs) * time.Second
+				}
+			}
+		}
+
+		c.logger.Debug("Retrying API request", "attempt", attempt+1, "status", resp.StatusCode, "backoff", wait)
+		resp.Body.Close()
+		time.Sleep(wait)
+		backoff *= 2
+	}
+
+	return resp, nil
 }
 
 func (c *Client) handleErrorResponse(resp *http.Response) error {
@@ -141,6 +205,11 @@ type pageResponse struct {
 	Version struct {
 		Number int `json:"number"`
 	} `json:"version"`
+	Body struct {
+		AtlasDocFormat struct {
+			Value string `json:"value"`
+		} `json:"atlas_doc_format"`
+	} `json:"body"`
 	Links struct {
 		WebUI string `json:"webui"`
 		Base  string `json:"base"`

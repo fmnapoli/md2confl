@@ -44,10 +44,10 @@ O projeto tem 3 suítes de testes:
 
 | Pacote | Tipo de testes | O que cobre |
 |--------|---------------|-------------|
-| `internal/cli` | Unitários | Parsing de flags, restrições de flags, exit codes, derivação de título, extração de page-id, detecção de imagens locais, patching de imagens, detecção e patching de blocos mermaid, output texto/JSON, dry-run, conversão de diretórios |
-| `parser` | Golden file | Conversão Markdown → ADF para todos os cenários suportados (basic, codeblock, table, mermaid, multi-mermaid, empty) |
-| `confluence` | HTTP mock | Todas as operações da API com `httptest.NewTLSServer`: ResolveSpaceID, CreatePage, GetPage, UpdatePage, FindByTitle, UploadAttachment, erros de autenticação |
-| `mermaid` | Unitário + integração | Verificação de disponibilidade do mmdc, renderização para SVG (skip se mmdc ausente), idempotência de hash |
+| `internal/cli` | Unitários | Parsing de flags, restrições de flags, exit codes, derivação de título, extração de page-id, detecção de imagens locais, patching de imagens, detecção e patching de blocos mermaid, output texto/JSON, dry-run, conversão de diretórios, `--verbose`, `--concurrency` (validação de limites), `adfUnchanged` (skip de páginas inalteradas), `addWarning` (thread-safety), `printWarningSummary` |
+| `parser` | Golden file | Conversão Markdown → ADF para todos os cenários suportados (basic, codeblock, table, mermaid, multi-mermaid, empty, nested-list, combined-marks) |
+| `confluence` | HTTP mock | Todas as operações da API com `httptest.NewTLSServer`: ResolveSpaceID, CreatePage, GetPage, UpdatePage, FindByTitle, UploadAttachment, erros de autenticação, retry com exponential backoff (429/5xx) |
+| `mermaid` | Unitário + mock + integração | Verificação de disponibilidade do mmdc (`EnsureAvailable` found/not-found), renderização para SVG (skip se mmdc ausente), idempotência de hash, timeout de subprocess (fake mmdc com `sleep`), falha de renderização (fake mmdc com exit 1) |
 
 ## Golden files
 
@@ -65,6 +65,10 @@ parser/testdata/
 ├── mermaid.json
 ├── multi-mermaid.md  Múltiplos diagramas Mermaid com texto entre eles
 ├── multi-mermaid.json
+├── nested-list.md    Listas aninhadas (bullet dentro de bullet, ordered dentro de bullet)
+├── nested-list.json
+├── combined-marks.md Bold+italic, strikethrough+bold, bold links, marcas combinadas
+├── combined-marks.json
 ├── empty.md          Arquivo vazio
 └── empty.json
 ```

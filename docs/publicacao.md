@@ -38,6 +38,51 @@ flowchart TD
     WriteMarker --> Done
 ```
 
+## Publicação paralela
+
+Quando múltiplos documentos são publicados (via config ou modo diretório), o md2confl processa em paralelo para maximizar performance:
+
+| Operação | Concorrência padrão |
+|----------|-------------------|
+| Documentos (first pass) | `--concurrency` (default 4) |
+| Upload de imagens | 8 |
+| Renderização mermaid | 2 (mmdc usa Chromium headless) |
+| Resolução de links (second pass) | 4 |
+
+A flag `--concurrency` controla o paralelismo de documentos (1–16). As demais operações têm limites fixos otimizados.
+
+## Skip de páginas inalteradas
+
+Antes de atualizar uma página existente, o md2confl compara o ADF atual (via API) com o novo ADF gerado. Se o conteúdo é idêntico (após normalização JSON), a atualização é ignorada:
+
+```
+- Skipped "Quick Start" (unchanged)
+```
+
+Isso reduz chamadas à API e evita incrementar a versão da página desnecessariamente.
+
+## Retry automático
+
+O cliente HTTP faz retry automático com exponential backoff para falhas transitórias:
+
+| Cenário | Comportamento |
+|---------|--------------|
+| Rate limit (429) | Respeita `Retry-After` header, senão backoff 1s → 2s → 4s |
+| Erro de servidor (5xx) | Backoff 1s → 2s → 4s (máximo 3 tentativas) |
+| Timeout de conexão | 30 segundos por requisição |
+
+Com `--verbose`, cada retry é logado no stderr.
+
+## Resumo de warnings
+
+Ao final da execução, o md2confl exibe um resumo consolidado de warnings (imagens não encontradas, uploads falhados, etc.):
+
+```
+⚠ 2 warning(s):
+  - local image not found: img/old.png
+  - failed to upload diagram.svg: 413 payload too large
+```
+
 ## Marcador de page ID
 
 O marcador `<!-- confluence-page-id: XXXXX -->` é um comentário HTML que o md2confl insere no topo do arquivo Markdown quando `--write-marker` é usado. Ele permite:
@@ -174,7 +219,7 @@ docker run --rm -v "$(pwd):/workspace" \
   fmnapoli/md2confl --input doc.md --publish --space DEVOPS
 ```
 
-Se o Markdown contém blocos mermaid e `mmdc` **não** está instalado, o md2confl retorna erro com instruções de instalação.
+Se o Markdown contém blocos mermaid e `mmdc` **não** está instalado, o md2confl retorna erro com instruções de instalação. Cada renderização tem um timeout de 60 segundos — diagramas muito complexos que excedam esse limite geram erro.
 
 ### Modo convert/dry-run (sem `--publish`)
 

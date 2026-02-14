@@ -25,11 +25,15 @@ O `md2confl` resolve isso:
 
 3. **Sincroniza** hierarquias de diretórios como árvores de páginas — cada pasta vira uma página pai, cada `.md` vira uma página filha.
 
-4. **Atualiza de forma idempotente** — marcadores `<!-- confluence-page-id: XXXXX -->` escritos no topo do Markdown permitem re-publicações que atualizam a mesma página sem duplicar.
+4. **Atualiza de forma idempotente** — marcadores `<!-- confluence-page-id: XXXXX -->` escritos no topo do Markdown permitem re-publicações que atualizam a mesma página sem duplicar. Páginas sem alterações são automaticamente ignoradas (skip unchanged).
 
 5. **Lida com imagens locais** — referências a imagens locais (`![](./img/foto.png)`) são automaticamente enviadas como attachments e vinculadas à página.
 
 6. **Renderiza diagramas Mermaid** — blocos `mermaid` são pré-renderizados para SVG via `mmdc` (mermaid-cli) durante o publish e enviados como imagens. A imagem Docker inclui tudo necessário (`md2confl` + Node.js + Chromium + mmdc).
+
+7. **Publica em paralelo** — documentos, uploads de imagens, renderização de diagramas e resolução de links são processados concorrentemente via goroutines (`--concurrency` configurável).
+
+8. **Resiliente a falhas transitórias** — retry automático com exponential backoff para rate limits (429) e erros de servidor (5xx), com logging estruturado via `--verbose`.
 
 ## Arquitetura
 

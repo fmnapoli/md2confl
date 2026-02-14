@@ -24,9 +24,19 @@ checksum:
   name_template: checksums.txt
 
 changelog:
+  use: github
   sort: asc
+  groups:
+    - title: Features
+      regexp: "^feat"
+    - title: Bug Fixes
+      regexp: "^fix"
+    - title: Documentation
+      regexp: "^docs"
+    - title: Other
+      order: 999
   filters:
-    exclude: ['^docs:', '^test:', '^chore:', 'Merge']
+    exclude: ['^test:', '^chore:', 'Merge']
 
 release:
   github:
