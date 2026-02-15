@@ -366,6 +366,48 @@ func TestRetry_HTMLResponse(t *testing.T) {
 	}
 }
 
+func TestRetry_HTMLResponse_PUT(t *testing.T) {
+	attempts := 0
+	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		body, _ := io.ReadAll(r.Body)
+
+		if attempts < 3 {
+			// Verify the retry sends the body again (not empty)
+			if len(body) == 0 {
+				t.Errorf("attempt %d: request body was empty on retry", attempts)
+			}
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(400)
+			_, _ = w.Write([]byte(`<!DOCTYPE HTML><HTML><BODY>CloudFront error</BODY></HTML>`))
+			return
+		}
+
+		// Verify the final attempt also has the body
+		if len(body) == 0 {
+			t.Errorf("attempt %d: request body was empty", attempts)
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":      "111",
+			"title":   "Test",
+			"version": map[string]any{"number": 5},
+			"_links":  map[string]any{"webui": "/pages/111", "base": "https://test.atlassian.net/wiki"},
+		})
+	})
+	defer ts.Close()
+
+	result, err := client.UpdatePage("111", "Test", `{"version":1,"type":"doc","content":[]}`, 4)
+	if err != nil {
+		t.Fatalf("expected retry to succeed, got: %v", err)
+	}
+	if result.PageID != "111" {
+		t.Errorf("expected 111, got %s", result.PageID)
+	}
+	if attempts != 3 {
+		t.Errorf("expected 3 attempts, got %d", attempts)
+	}
+}
+
 func TestHandleErrorResponse_HTMLBody(t *testing.T) {
 	ts, client := newTestServer(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")

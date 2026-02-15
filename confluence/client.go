@@ -145,6 +145,15 @@ func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
 		resp.Body.Close()
 		time.Sleep(wait)
 		backoff *= 2
+
+		// Reset the request body for the next attempt (POST/PUT bodies
+		// are consumed by Do and need to be re-created from GetBody).
+		if req.GetBody != nil {
+			req.Body, err = req.GetBody()
+			if err != nil {
+				return nil, fmt.Errorf("resetting request body for retry: %w", err)
+			}
+		}
 	}
 
 	return resp, nil
