@@ -336,6 +336,61 @@ func TestUploadAttachment(t *testing.T) {
 	}
 }
 
+func TestRetry_HTMLResponse(t *testing.T) {
+	attempts := 0
+	ts, client := newTestServer(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts < 3 {
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(400)
+			_, _ = w.Write([]byte(`<!DOCTYPE HTML><HTML><BODY><H1>400 ERROR</H1>CloudFront</BODY></HTML>`))
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{
+				{"id": "123456", "key": "TEST"},
+			},
+		})
+	})
+	defer ts.Close()
+
+	id, err := client.ResolveSpaceID("TEST")
+	if err != nil {
+		t.Fatalf("expected retry to succeed, got: %v", err)
+	}
+	if id != "123456" {
+		t.Errorf("expected 123456, got %s", id)
+	}
+	if attempts != 3 {
+		t.Errorf("expected 3 attempts, got %d", attempts)
+	}
+}
+
+func TestHandleErrorResponse_HTMLBody(t *testing.T) {
+	ts, client := newTestServer(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(400)
+		_, _ = w.Write([]byte(`<!DOCTYPE HTML><HTML><BODY><H1>400 ERROR</H1></BODY></HTML>`))
+	})
+	defer ts.Close()
+	client.maxRetries = 1 // no retry, just test error categorization
+
+	_, err := client.ResolveSpaceID("TEST")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected APIError, got %T", err)
+	}
+	if apiErr.Category != ErrCategoryNetwork {
+		t.Errorf("expected network error, got %s", apiErr.Category)
+	}
+	if !strings.Contains(apiErr.Message, "CDN/proxy error") {
+		t.Errorf("expected CDN/proxy error message, got %q", apiErr.Message)
+	}
+}
+
 func TestUploadAttachment_FallbackToAttID(t *testing.T) {
 	dir := t.TempDir()
 	testFile := filepath.Join(dir, "test.png")

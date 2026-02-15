@@ -90,8 +90,20 @@ func (c *Client) doRequest(req *http.Request) (*http.Response, error) {
 	return c.doWithRetry(req)
 }
 
-// doWithRetry executes an HTTP request with retry on 429 (rate limit) and 5xx
-// (server error). Uses exponential backoff: 1s, 2s, 4s (max 3 attempts).
+// isRetryable returns true if the response should be retried.
+// Retries on 429 (rate limit), 5xx (server error), and any response with
+// HTML content type (CDN/proxy errors like CloudFront 400).
+func isRetryable(resp *http.Response) bool {
+	if resp.StatusCode == 429 || resp.StatusCode >= 500 {
+		return true
+	}
+	ct := resp.Header.Get("Content-Type")
+	return strings.Contains(ct, "text/html")
+}
+
+// doWithRetry executes an HTTP request with retry on transient errors.
+// Retries on 429 (rate limit), 5xx (server error), and HTML responses
+// (CDN/proxy errors). Uses exponential backoff: 1s, 2s, 4s (max 3 attempts).
 // Respects the Retry-After header on 429 responses.
 func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
 	backoff := c.initialDelay
@@ -111,12 +123,11 @@ func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
 
 		c.logger.Debug("API request", "method", req.Method, "url", req.URL.Path, "status", resp.StatusCode, "elapsed", elapsed)
 
-		// Don't retry on success or client errors (except 429)
-		if resp.StatusCode < 429 || (resp.StatusCode > 429 && resp.StatusCode < 500) {
+		if !isRetryable(resp) {
 			return resp, nil
 		}
 
-		// Retryable: 429 or 5xx
+		// Retryable error
 		if attempt == c.maxRetries-1 {
 			return resp, nil // last attempt, return as-is
 		}
@@ -141,20 +152,32 @@ func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
 
 func (c *Client) handleErrorResponse(resp *http.Response) error {
 	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+
+	// Detect CDN/proxy HTML error pages (e.g. CloudFront 400)
+	if strings.Contains(resp.Header.Get("Content-Type"), "text/html") || strings.HasPrefix(bodyStr, "<!DOCTYPE") {
+		return &APIError{
+			Category:   ErrCategoryNetwork,
+			StatusCode: resp.StatusCode,
+			Message:    fmt.Sprintf("CDN/proxy error (HTTP %d) — likely a transient issue", resp.StatusCode),
+			Hint:       "retry the operation; if it persists, check Atlassian status at https://status.atlassian.com",
+		}
+	}
+
 	switch resp.StatusCode {
 	case 401, 403:
 		return authError(resp.StatusCode)
 	case 404:
-		return notFoundError("resource", string(body))
+		return notFoundError("resource", bodyStr)
 	case 409:
 		return conflictError()
 	case 400, 422:
-		return validationError(string(body))
+		return validationError(bodyStr)
 	default:
 		return &APIError{
 			Category:   ErrCategoryNetwork,
 			StatusCode: resp.StatusCode,
-			Message:    fmt.Sprintf("unexpected API response %d: %s", resp.StatusCode, string(body)),
+			Message:    fmt.Sprintf("unexpected API response %d: %s", resp.StatusCode, bodyStr),
 		}
 	}
 }
