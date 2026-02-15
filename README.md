@@ -58,9 +58,9 @@ graph LR
 |--------|-------------|-----------------|
 | `adf` | Público | Tipos de dados ADF — `Document`, `Node`, `Mark`. Representa o envelope JSON `{"version":1, "type":"doc", "content":[...]}` e a árvore de nós com atributos e marcas inline. |
 | `parser` | Público | Converte `[]byte` Markdown para `*adf.Document`. Usa goldmark com extensões GFM, emoji e superscript para fazer parse, e um AST walker com stack para construir a árvore ADF. Suporta task lists, GitHub alerts (`[!NOTE]` → panels), emojis (`:tada:`), `<details>` (→ expand) e superscript (`^text^`). |
-| `mermaid` | Público | Renderiza diagramas Mermaid para SVG via `mmdc` (mermaid-cli). Verifica disponibilidade do binário, gera nomes de arquivo determinísticos via SHA256 e configura puppeteer para ambientes Docker/CI. |
-| `confluence` | Público | Cliente REST API v2 do Confluence Cloud. Resolve space key → ID, cria/atualiza páginas, busca por título, faz upload de attachments. Todos os erros são `*APIError` com categoria, status HTTP e hint acionável. |
-| `internal/cli` | Interno | Orquestração CLI: parsing de flags, resolução de credenciais (flags > env vars), modos de operação (dry-run, output file, publish), processamento de diretórios, renderização de mermaid, upload de imagens locais, escrita de marcadores page-id. Não é API pública — só `main.go` importa. |
+| `mermaid` | Público | Renderiza diagramas Mermaid para SVG via `mmdc` (mermaid-cli). Verifica disponibilidade do binário, gera nomes de arquivo determinísticos via SHA256, configura puppeteer para ambientes Docker/CI. Timeout de 60s por renderização. |
+| `confluence` | Público | Cliente REST API v2 do Confluence Cloud. Resolve space key → ID, cria/atualiza páginas, busca por título, faz upload de attachments. Retry automático com exponential backoff para 429/5xx, timeout de 30s por requisição. Todos os erros são `*APIError` com categoria, status HTTP e hint acionável. |
+| `internal/cli` | Interno | Orquestração CLI: parsing de flags, resolução de credenciais (flags > env vars), modos de operação (dry-run, output file, publish), processamento de diretórios, renderização de mermaid, upload de imagens locais, escrita de marcadores page-id. Publicação paralela via errgroup (`--concurrency`), skip de páginas inalteradas, logging estruturado (`--verbose`), resumo de warnings. Não é API pública — só `main.go` importa. |
 
 ### Fluxo de dados
 
@@ -90,11 +90,11 @@ graph LR
 |--------|-----------|
 | [Quick Start](docs/quickstart.md) | Tutorial: instalar → converter → publicar primeira página |
 | [Instalação](docs/instalacao.md) | go install, build manual, Docker, variáveis de ambiente, API token |
-| [Uso e Referência](docs/referencia.md) | Exemplos de uso, flags, restrições entre flags, exit codes |
+| [Uso e Referência](docs/referencia.md) | Flags (`--verbose`, `--concurrency`), restrições, exit codes, mapeamento Markdown → ADF |
 | [Configuração](docs/configuracao.md) | Arquivo `.md2confl.yml`, auto-discovery, precedência |
-| [Publicação](docs/publicacao.md) | Fluxo de publicação, marcadores, modo pasta, Mermaid, imagens |
-| [Desenvolvimento](docs/desenvolvimento.md) | Pré-requisitos, Makefile, testes, golden files, estrutura |
-| [CI/CD](docs/ci-cd.md) | Automatizar publicação com GitHub Actions |
+| [Publicação](docs/publicacao.md) | Publicação paralela, skip unchanged, retry, warnings, modo pasta, Mermaid, imagens |
+| [Desenvolvimento](docs/desenvolvimento.md) | Pré-requisitos, Makefile, testes (golden, mock, race), estrutura |
+| [CI/CD](docs/ci-cd.md) | GitHub Actions, govulncheck, GoReleaser |
 | [Componentes ADF](docs/componentes.md) | Showcase: todos os elementos Markdown → Confluence |
 
 ## Licença
