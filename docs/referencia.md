@@ -1,5 +1,17 @@
 # Uso e Referência
 
+```mermaid
+flowchart TD
+    Input["md2confl --input doc.md"] --> Mode{"Modo de operação"}
+    Mode -->|"--output"| Convert["Converter para arquivo<br/><small>ADF JSON → disco</small>"]
+    Mode -->|"--publish"| Publish["Publicar no Confluence<br/><small>criar ou atualizar página</small>"]
+    Mode -->|"nenhum ou --dry-run"| Stdout["Preview no stdout<br/><small>ADF JSON → terminal</small>"]
+
+    Publish --> WithDryRun{"--dry-run?"}
+    WithDryRun -- "Sim" --> Simulate["Simula publicação<br/><small>sem chamar API</small>"]
+    WithDryRun -- "Não" --> API["Chama API<br/><small>Confluence Cloud</small>"]
+```
+
 ## Uso rápido
 
 ### 1. Converter para ADF JSON (stdout)
@@ -218,6 +230,19 @@ Output de erro:
 | `--concurrency 0` ou `> 16` | Erro: concurrency deve estar entre 1 e 16 |
 
 ## Exit codes
+
+```mermaid
+graph LR
+    E0["Exit 0<br/><small>Sucesso</small>"]
+    E1["Exit 1<br/><small>Erro do usuário</small>"]
+    E2["Exit 2<br/><small>Erro da API</small>"]
+
+    E0 --- E1 --- E2
+
+    style E0 fill:#c8e6c9
+    style E1 fill:#fff3e0
+    style E2 fill:#ffcdd2
+```
 
 | Código | Categoria | Quando ocorre |
 |--------|-----------|---------------|

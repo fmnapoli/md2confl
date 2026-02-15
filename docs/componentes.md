@@ -126,6 +126,15 @@ Pode conter **formatação** e `código`.
 Mais conteúdo escondido aqui.
 </details>
 
+## Diagrama Mermaid
+
+```mermaid
+graph LR
+    A["Markdown"] --> B["md2confl"]
+    B --> C["ADF JSON"]
+    C --> D["Confluence Cloud"]
+```
+
 ## Imagens
 
 Badge inline: [![CI](https://github.com/fmnapoli/md2confl/actions/workflows/ci.yml/badge.svg)](https://github.com/fmnapoli/md2confl/actions/workflows/ci.yml)

@@ -49,6 +49,19 @@ O projeto tem 3 suítes de testes:
 | `confluence` | HTTP mock | Todas as operações da API com `httptest.NewTLSServer`: ResolveSpaceID, CreatePage, GetPage, UpdatePage, FindByTitle, UploadAttachment, erros de autenticação, retry com exponential backoff (429/5xx) |
 | `mermaid` | Unitário + mock + integração | Verificação de disponibilidade do mmdc (`EnsureAvailable` found/not-found), renderização para SVG (skip se mmdc ausente), idempotência de hash, timeout de subprocess (fake mmdc com `sleep`), falha de renderização (fake mmdc com exit 1) |
 
+```mermaid
+graph TD
+    Tests["go test -race ./..."]
+    Tests --> CLI["internal/cli<br/><small>unitários + integração</small>"]
+    Tests --> Parser["parser<br/><small>golden file</small>"]
+    Tests --> Confluence["confluence<br/><small>HTTP mock</small>"]
+    Tests --> Mermaid["mermaid<br/><small>mock + integração</small>"]
+
+    Parser --> Golden["testdata/<br/>*.md → *.json"]
+    Confluence --> TLS["httptest.NewTLSServer"]
+    Mermaid --> Fake["fake mmdc scripts"]
+```
+
 ## Golden files
 
 Os testes do parser usam o pattern golden file: cada `parser/testdata/<nome>.md` tem um `<nome>.json` correspondente com o ADF esperado. O teste converte o `.md` e compara byte-a-byte com o `.json`.
@@ -71,6 +84,17 @@ parser/testdata/
 ├── combined-marks.json
 ├── empty.md          Arquivo vazio
 └── empty.json
+```
+
+```mermaid
+graph LR
+    MD[".md fixture"] --> Parse["parser.ConvertToADF()"]
+    Parse --> Compare{"Output == .json?"}
+    Compare -- "Sim" --> Pass["✓ Test PASS"]
+    Compare -- "Não" --> Fail["✗ Test FAIL<br/><small>diff exibido</small>"]
+    Fail --> Update["go test ./parser -update"]
+    Update --> Review["Revisar diff<br/><small>do .json atualizado</small>"]
+    Review --> Commit["git commit"]
 ```
 
 Para atualizar golden files após mudanças intencionais no output:

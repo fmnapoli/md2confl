@@ -2,6 +2,16 @@
 
 Este guia mostra como instalar o `md2confl`, converter um Markdown para ADF e publicar sua primeira página no Confluence Cloud em menos de 5 minutos.
 
+```mermaid
+graph LR
+    Install["1. Instalar<br/><small>go install ou Docker</small>"] --> Create["2. Criar .md<br/><small>Markdown de teste</small>"]
+    Create --> Convert["3. Converter<br/><small>preview ADF local</small>"]
+    Convert --> Creds["4. Credenciais<br/><small>API token</small>"]
+    Creds --> Publish["5. Publicar<br/><small>--publish --space</small>"]
+    Publish --> Marker["6. Marcador<br/><small>--write-marker</small>"]
+    Marker --> Docker["7. Docker<br/><small>com Mermaid</small>"]
+```
+
 ## 1. Instalar
 
 Escolha uma das opções:

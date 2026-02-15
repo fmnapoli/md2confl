@@ -64,6 +64,16 @@ md2confl --input doc.md --publish --url https://... --space DEVOPS
 
 ## Auto-discovery
 
+```mermaid
+flowchart TD
+    Start["md2confl invocado"] --> HasFlag{"Flag --config<br/>fornecida?"}
+    HasFlag -- "Sim" --> LoadExplicit["Carrega config<br/>do caminho informado"]
+    HasFlag -- "Não" --> Search["Procura .md2confl.yml<br/>no diretório corrente"]
+    Search --> Found{"Encontrou?"}
+    Found -- "Sim" --> LoadAuto["Carrega config<br/>+ emite mensagem no stderr"]
+    Found -- "Não" --> FlagsOnly["Usa apenas<br/>flags e env vars"]
+```
+
 Sem `--config` explícito, o md2confl procura `.md2confl.yml` (ou `.md2confl.yaml`) no diretório corrente. Se encontrar, carrega silenciosamente e emite uma mensagem no stderr:
 
 ```
@@ -74,8 +84,15 @@ Se não encontrar, segue o fluxo normal baseado em flags.
 
 ## Precedência
 
-```
-flag > config (document-level) > config (global-level) > env var
+```mermaid
+graph LR
+    A["Flag CLI"] -->|"maior prioridade"| B["Config<br/><small>document-level</small>"]
+    B --> C["Config<br/><small>global-level</small>"]
+    C --> D["Env var"]
+    D -->|"menor prioridade"| E["Default"]
+
+    style A fill:#c8e6c9
+    style E fill:#ffecb3
 ```
 
 ## Input de diretório

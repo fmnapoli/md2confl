@@ -51,6 +51,22 @@ Quando múltiplos documentos são publicados (via config ou modo diretório), o 
 
 A flag `--concurrency` controla o paralelismo de documentos (1–16). As demais operações têm limites fixos otimizados.
 
+```mermaid
+graph TD
+    Config["Config com N documentos"] --> First["First pass<br/><small>--concurrency goroutines</small>"]
+    First --> D1["Doc 1"]
+    First --> D2["Doc 2"]
+    First --> D3["Doc N..."]
+
+    D1 --> Images["Upload imagens<br/><small>8 goroutines</small>"]
+    D2 --> Images
+    D3 --> Images
+
+    Images --> Mermaid["Render Mermaid<br/><small>2 goroutines</small>"]
+    Mermaid --> Second["Second pass<br/><small>resolução de links</small>"]
+    Second --> Done["✓ Publicação completa"]
+```
+
 ## Skip de páginas inalteradas
 
 Antes de atualizar uma página existente, o md2confl compara o ADF atual (via API) com o novo ADF gerado. Se o conteúdo é idêntico (após normalização JSON), a atualização é ignorada:
@@ -70,6 +86,21 @@ O cliente HTTP faz retry automático com exponential backoff para falhas transit
 | Rate limit (429) | Respeita `Retry-After` header, senão backoff 1s → 2s → 4s |
 | Erro de servidor (5xx) | Backoff 1s → 2s → 4s (máximo 3 tentativas) |
 | Timeout de conexão | 30 segundos por requisição |
+
+```mermaid
+graph LR
+    Req["Request HTTP"] --> Try1["Tentativa 1"]
+    Try1 -->|"429 / 5xx / HTML"| Wait1["Espera 1s"]
+    Wait1 --> Try2["Tentativa 2"]
+    Try2 -->|"429 / 5xx / HTML"| Wait2["Espera 2s"]
+    Wait2 --> Try3["Tentativa 3"]
+    Try3 -->|"sucesso"| OK["✓ Resposta OK"]
+    Try3 -->|"falha"| Err["✗ APIError<br/><small>com categoria e hint</small>"]
+    Try1 -->|"sucesso"| OK
+
+    style OK fill:#c8e6c9
+    style Err fill:#ffcdd2
+```
 
 Com `--verbose`, cada retry é logado no stderr.
 

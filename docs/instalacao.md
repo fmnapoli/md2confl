@@ -1,6 +1,19 @@
 <!-- confluence-page-id: 327875 -->
 # Instalação
 
+```mermaid
+flowchart TD
+    Start["Como instalar?"] --> Mermaid{"Precisa de<br/>diagramas Mermaid?"}
+    Mermaid -- "Sim" --> Docker["Docker<br/><small>docker pull fmnapoli/md2confl</small>"]
+    Mermaid -- "Não" --> Go{"Tem Go instalado?"}
+    Go -- "Sim" --> GoInstall["go install<br/><small>go install ...@latest</small>"]
+    Go -- "Não" --> Build["Build manual<br/><small>git clone + make build</small>"]
+
+    style Docker fill:#e1f5fe
+    style GoInstall fill:#e8f5e9
+    style Build fill:#fff3e0
+```
+
 ## Via `go install`
 
 ```bash
@@ -55,6 +68,16 @@ make docker
 | `CONFLUENCE_URL` | `--url` | URL base do Confluence Cloud |
 | `CONFLUENCE_EMAIL` | `--email` | E-mail da conta Atlassian |
 | `CONFLUENCE_TOKEN` | `--token` | API token da Atlassian |
+
+```mermaid
+graph LR
+    Flag["--token<br/><small>flag CLI</small>"] -->|"vence"| DocConfig["config<br/><small>document-level</small>"]
+    DocConfig -->|"vence"| GlobalConfig["config<br/><small>global-level</small>"]
+    GlobalConfig -->|"vence"| EnvVar["CONFLUENCE_TOKEN<br/><small>env var</small>"]
+
+    style Flag fill:#c8e6c9
+    style EnvVar fill:#ffecb3
+```
 
 **Precedência:** flag > config (document-level) > config (global-level) > variável de ambiente. Se ambos estão definidos, o nível mais específico vence.
 
