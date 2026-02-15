@@ -508,52 +508,9 @@ func (app *appEnv) handlePublish(path string, source, adfJSON []byte, doc *adf.D
 		}
 	}
 
-	// Upload local images as attachments and patch ADF (parallel)
-	localImages := findLocalImages(doc)
-	if len(localImages) > 0 {
-		baseDir := filepath.Dir(path)
-		attachmentMap := map[string]string{} // url -> attachment ID
-		var attMu sync.Mutex
-		g, _ := errgroup.WithContext(context.Background())
-		g.SetLimit(8)
-		for _, imgURL := range localImages {
-			g.Go(func() error {
-				imgPath := imgURL
-				if !filepath.IsAbs(imgURL) {
-					imgPath = filepath.Join(baseDir, imgURL)
-				}
-				if _, err := os.Stat(imgPath); err != nil {
-					app.logger.Warn("Local image not found", "path", imgPath)
-					app.addWarning(fmt.Sprintf("local image not found: %s", imgPath))
-					return nil // non-fatal
-				}
-				attID, err := client.UploadAttachment(result.PageID, imgPath)
-				if err != nil {
-					app.logger.Warn("Failed to upload image", "image", imgURL, "error", err)
-					app.addWarning(fmt.Sprintf("failed to upload %s: %v", imgURL, err))
-					return nil // non-fatal
-				}
-				attMu.Lock()
-				attachmentMap[imgURL] = attID
-				attMu.Unlock()
-				return nil
-			})
-		}
-		_ = g.Wait()
-		if len(attachmentMap) > 0 {
-			patchLocalImages(doc, attachmentMap, result.PageID)
-			patchedJSON, err := json.MarshalIndent(doc, "", "  ")
-			if err == nil {
-				// Get current version for update
-				currentPage, err := client.GetPage(result.PageID)
-				if err == nil {
-					updated, err := client.UpdatePage(result.PageID, result.Title, string(patchedJSON), currentPage.Version.Number)
-					if err == nil {
-						result = updated
-					}
-				}
-			}
-		}
+	// Upload local images as attachments and patch ADF
+	if err := app.uploadAndPatchImages(client, doc, result, filepath.Dir(path)); err != nil {
+		return err
 	}
 
 	// Save result for inter-document link resolution (second pass)
@@ -590,6 +547,59 @@ func (app *appEnv) handlePublish(path string, source, adfJSON []byte, doc *adf.D
 		}, app.jsonOutput)
 	}()
 
+	return nil
+}
+
+// uploadAndPatchImages finds local images in the ADF, uploads them as
+// Confluence attachments, patches the ADF media nodes, and updates the page.
+func (app *appEnv) uploadAndPatchImages(client *confluence.Client, doc *adf.Document, result *confluence.PublishResult, basePath string) error {
+	localImages := findLocalImages(doc)
+	if len(localImages) == 0 {
+		return nil
+	}
+
+	attachmentMap := map[string]string{} // url -> attachment ID
+	var attMu sync.Mutex
+	g, _ := errgroup.WithContext(context.Background())
+	g.SetLimit(8)
+	for _, imgURL := range localImages {
+		g.Go(func() error {
+			imgPath := imgURL
+			if !filepath.IsAbs(imgURL) {
+				imgPath = filepath.Join(basePath, imgURL)
+			}
+			if _, err := os.Stat(imgPath); err != nil {
+				app.logger.Warn("Local image not found", "path", imgPath)
+				app.addWarning(fmt.Sprintf("local image not found: %s", imgPath))
+				return nil // non-fatal
+			}
+			attID, err := client.UploadAttachment(result.PageID, imgPath)
+			if err != nil {
+				app.logger.Warn("Failed to upload image", "image", imgURL, "error", err)
+				app.addWarning(fmt.Sprintf("failed to upload %s: %v", imgURL, err))
+				return nil // non-fatal
+			}
+			attMu.Lock()
+			attachmentMap[imgURL] = attID
+			attMu.Unlock()
+			return nil
+		})
+	}
+	_ = g.Wait()
+
+	if len(attachmentMap) > 0 {
+		patchLocalImages(doc, attachmentMap, result.PageID)
+		patchedJSON, err := json.MarshalIndent(doc, "", "  ")
+		if err == nil {
+			currentPage, err := client.GetPage(result.PageID)
+			if err == nil {
+				updated, err := client.UpdatePage(result.PageID, result.Title, string(patchedJSON), currentPage.Version.Number)
+				if err == nil {
+					*result = *updated
+				}
+			}
+		}
+	}
 	return nil
 }
 
@@ -764,6 +774,13 @@ func (app *appEnv) publishDirTree(client *confluence.Client, spaceID, parentID s
 			return fmt.Errorf("converting %q: %w", pagePath, err)
 		}
 		pageDoc = doc
+		rendered, merr := renderMermaidBlocks(doc)
+		if merr != nil {
+			return merr
+		}
+		if rendered {
+			app.logger.Info("Rendered mermaid diagrams", "count", countMermaidSVGs(doc), "file", pagePath)
+		}
 		adfJSON, err := json.MarshalIndent(doc, "", "  ")
 		if err != nil {
 			return fmt.Errorf("marshaling ADF: %w", err)
@@ -828,6 +845,13 @@ func (app *appEnv) publishDirTree(client *confluence.Client, spaceID, parentID s
 		}
 	}
 
+	// Upload local images (including mermaid SVGs) for README
+	if pageDoc != nil {
+		if err := app.uploadAndPatchImages(client, pageDoc, dirResult, filepath.Dir(pagePath)); err != nil {
+			return err
+		}
+	}
+
 	func() {
 		unlock := app.lockOutput()
 		defer unlock()
@@ -860,6 +884,13 @@ func (app *appEnv) publishDirTree(client *confluence.Client, spaceID, parentID s
 		doc, err := parser.ConvertToADF(f.Content)
 		if err != nil {
 			return fmt.Errorf("converting %q: %w", f.Path, err)
+		}
+		rendered, merr := renderMermaidBlocks(doc)
+		if merr != nil {
+			return merr
+		}
+		if rendered {
+			app.logger.Info("Rendered mermaid diagrams", "count", countMermaidSVGs(doc), "file", f.Path)
 		}
 		adfJSON, err := json.MarshalIndent(doc, "", "  ")
 		if err != nil {
@@ -910,6 +941,11 @@ func (app *appEnv) publishDirTree(client *confluence.Client, spaceID, parentID s
 					app.logger.Warn("Could not write page-id marker", "error", err)
 				}
 			}
+		}
+
+		// Upload local images (including mermaid SVGs) for child file
+		if err := app.uploadAndPatchImages(client, doc, childResult, filepath.Dir(f.Path)); err != nil {
+			return err
 		}
 
 		func() {

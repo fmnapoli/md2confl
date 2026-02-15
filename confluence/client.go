@@ -75,6 +75,11 @@ func (c *Client) SetLogger(l *slog.Logger) {
 	c.logger = l
 }
 
+// SetHTTPClient overrides the default HTTP client (useful for testing with TLS test servers).
+func (c *Client) SetHTTPClient(hc *http.Client) {
+	c.httpClient = hc
+}
+
 func (c *Client) authHeader() string {
 	creds := c.config.Email + ":" + c.config.Token
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte(creds))

@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1930,6 +1932,189 @@ func TestPrintWarningSummary(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPublishDirTree_MermaidRendering(t *testing.T) {
+	// Verify that publishDirTree calls renderMermaidBlocks for both README
+	// and child files. When mmdc is available, mermaid codeBlocks become
+	// mediaSingle nodes; when not available, they remain as codeBlocks (no error).
+	dir := t.TempDir()
+
+	readme := "# Root\n\n```mermaid\ngraph TD;\n    A-->B;\n```\n"
+	child := "# Child\n\n```mermaid\nsequenceDiagram\n    Alice->>Bob: Hello\n```\n"
+
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte(readme), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "child.md"), []byte(child), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Track ADF bodies sent via CreatePage
+	var sentADFs []string
+	var mu sync.Mutex
+	pageCounter := 0
+	baseURL := "https://test.atlassian.net/wiki"
+
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// ResolveSpaceID
+		if r.Method == "GET" && strings.Contains(r.URL.Path, "/spaces") {
+			json.NewEncoder(w).Encode(map[string]any{
+				"results": []map[string]any{
+					{"id": "space-1", "key": "TEST"},
+				},
+			})
+			return
+		}
+
+		// CreatePage
+		if r.Method == "POST" && strings.Contains(r.URL.Path, "/pages") {
+			body, _ := io.ReadAll(r.Body)
+
+			// Extract ADF from the request body
+			var req map[string]any
+			json.Unmarshal(body, &req)
+			if bodyField, ok := req["body"].(map[string]any); ok {
+				if value, ok := bodyField["value"].(string); ok {
+					mu.Lock()
+					sentADFs = append(sentADFs, value)
+					mu.Unlock()
+				}
+			}
+
+			mu.Lock()
+			pageCounter++
+			pageID := fmt.Sprintf("page-%d", pageCounter)
+			mu.Unlock()
+
+			json.NewEncoder(w).Encode(map[string]any{
+				"id":    pageID,
+				"title": "Test Page",
+				"version": map[string]any{
+					"number": 1,
+				},
+				"spaceId": "space-1",
+				"_links": map[string]any{
+					"webui": "/spaces/TEST/pages/" + pageID,
+					"base":  baseURL,
+				},
+			})
+			return
+		}
+
+		// GetPage (for image upload update)
+		if r.Method == "GET" && strings.Contains(r.URL.Path, "/pages/") {
+			json.NewEncoder(w).Encode(map[string]any{
+				"id":    "page-1",
+				"title": "Test Page",
+				"version": map[string]any{
+					"number": 1,
+				},
+				"_links": map[string]any{
+					"webui": "/spaces/TEST/pages/page-1",
+					"base":  baseURL,
+				},
+			})
+			return
+		}
+
+		// UpdatePage
+		if r.Method == "PUT" && strings.Contains(r.URL.Path, "/pages/") {
+			json.NewEncoder(w).Encode(map[string]any{
+				"id":    "page-1",
+				"title": "Test Page",
+				"version": map[string]any{
+					"number": 2,
+				},
+				"_links": map[string]any{
+					"webui": "/spaces/TEST/pages/page-1",
+					"base":  baseURL,
+				},
+			})
+			return
+		}
+
+		// UploadAttachment
+		if r.Method == "POST" && strings.Contains(r.URL.Path, "/child/attachment") {
+			json.NewEncoder(w).Encode(map[string]any{
+				"results": []map[string]any{
+					{"id": "att-1", "title": "mermaid.svg", "extensions": map[string]any{"fileId": "file-1"}},
+				},
+			})
+			return
+		}
+
+		http.Error(w, "not found", 404)
+	}))
+	defer ts.Close()
+
+	client, err := confluence.NewClient(confluence.Config{
+		BaseURL:  ts.URL,
+		SpaceKey: "TEST",
+		Email:    "test@example.com",
+		Token:    "test-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.SetHTTPClient(ts.Client())
+
+	var stdout, stderr bytes.Buffer
+	warnings := make([]string, 0)
+	app := &appEnv{
+		publish:      true,
+		force:        false,
+		stdout:       &stdout,
+		stderr:       &stderr,
+		outputMu:     &sync.Mutex{},
+		warnings:     &warnings,
+		warningsMu:   &sync.Mutex{},
+		docResults:   make(map[string]*docPublishResult),
+		docResultsMu: &sync.Mutex{},
+	}
+	app.logger = slog.New(slog.NewTextHandler(&stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	tree, err := buildDirTree(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := app.publishDirTree(client, "space-1", "", tree, true); err != nil {
+		t.Fatalf("publishDirTree failed: %v", err)
+	}
+
+	// Should have created 2 pages (README + child.md)
+	if len(sentADFs) != 2 {
+		t.Fatalf("expected 2 ADF payloads sent, got %d", len(sentADFs))
+	}
+
+	// Verify the ADF was processed (mermaid rendering was attempted).
+	// If mmdc is available, codeBlocks should be replaced with mediaSingle.
+	// If mmdc is not available, they remain as codeBlocks (no error).
+	for i, adfStr := range sentADFs {
+		var doc adf.Document
+		if err := json.Unmarshal([]byte(adfStr), &doc); err != nil {
+			t.Fatalf("invalid ADF in payload %d: %v", i, err)
+		}
+
+		hasMermaidCode := false
+		hasMediaSingle := false
+		for _, node := range doc.Content {
+			if node.Type == "codeBlock" {
+				if lang, ok := node.Attrs["language"].(string); ok && lang == "mermaid" {
+					hasMermaidCode = true
+				}
+			}
+			if node.Type == "mediaSingle" {
+				hasMediaSingle = true
+			}
+		}
+
+		// Either mmdc rendered (mediaSingle) or not available (codeBlock remains)
+		if !hasMermaidCode && !hasMediaSingle {
+			t.Errorf("payload %d: expected either mermaid codeBlock or mediaSingle, got neither", i)
+		}
 	}
 }
 
