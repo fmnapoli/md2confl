@@ -53,22 +53,17 @@
       ]
     },
     {
-      "type": "paragraph",
+      "type": "mediaSingle",
+      "attrs": {
+        "layout": "center"
+      },
       "content": [
         {
-          "type": "mediaSingle",
+          "type": "media",
           "attrs": {
-            "layout": "center"
-          },
-          "content": [
-            {
-              "type": "media",
-              "attrs": {
-                "type": "external",
-                "url": "logo.png"
-              }
-            }
-          ]
+            "type": "external",
+            "url": "logo.png"
+          }
         }
       ]
     },

@@ -89,6 +89,27 @@ func (w *walker) append(node adf.Node) {
 	w.stack[n-1] = append(w.stack[n-1], node)
 }
 
+// appendWithHoist wraps content in a node of blockType, but hoists any
+// block-level children (mediaSingle) out so they become siblings instead of
+// being nested inside an inline container like paragraph.
+func (w *walker) appendWithHoist(blockType string, content []adf.Node) {
+	var inlineRun []adf.Node
+	for _, child := range content {
+		if child.Type == "mediaSingle" {
+			if len(inlineRun) > 0 {
+				w.append(adf.Node{Type: blockType, Content: inlineRun})
+				inlineRun = nil
+			}
+			w.append(child)
+		} else {
+			inlineRun = append(inlineRun, child)
+		}
+	}
+	if len(inlineRun) > 0 {
+		w.append(adf.Node{Type: blockType, Content: inlineRun})
+	}
+}
+
 func (w *walker) nextLocalID() string {
 	w.localIDCounter++
 	return strconv.Itoa(w.localIDCounter)
@@ -117,10 +138,7 @@ func (w *walker) walk(node ast.Node, entering bool) (ast.WalkStatus, error) {
 		} else {
 			content := w.pop()
 			if len(content) > 0 {
-				w.append(adf.Node{
-					Type:    "paragraph",
-					Content: content,
-				})
+				w.appendWithHoist("paragraph", content)
 			}
 		}
 
@@ -130,10 +148,7 @@ func (w *walker) walk(node ast.Node, entering bool) (ast.WalkStatus, error) {
 		} else {
 			content := w.pop()
 			if len(content) > 0 {
-				w.append(adf.Node{
-					Type:    "paragraph",
-					Content: content,
-				})
+				w.appendWithHoist("paragraph", content)
 			}
 		}
 

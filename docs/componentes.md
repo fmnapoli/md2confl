@@ -139,6 +139,14 @@ graph LR
 
 Badge inline: [![CI](https://github.com/fmnapoli/md2confl/actions/workflows/ci.yml/badge.svg)](https://github.com/fmnapoli/md2confl/actions/workflows/ci.yml)
 
+Imagem standalone (local):
+
+![md2confl demo](assets/demo.svg)
+
+Imagem standalone (remota):
+
+![Go Gopher](https://go.dev/blog/gopher/header.jpg)
+
 ## Separadores
 
 Conteúdo acima.
