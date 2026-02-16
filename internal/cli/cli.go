@@ -638,6 +638,18 @@ type DirEntry struct {
 	Children []DirEntry
 }
 
+func (d *DirEntry) hasMarkdown() bool {
+	if d.Readme != nil || len(d.Files) > 0 {
+		return true
+	}
+	for i := range d.Children {
+		if d.Children[i].hasMarkdown() {
+			return true
+		}
+	}
+	return false
+}
+
 type mdFile struct {
 	Path    string
 	Content []byte
@@ -719,7 +731,9 @@ func buildDirTree(root string) (*DirEntry, error) {
 			if err != nil {
 				return nil, err
 			}
-			entry.Children = append(entry.Children, *child)
+			if child.hasMarkdown() {
+				entry.Children = append(entry.Children, *child)
+			}
 		} else if strings.HasSuffix(strings.ToLower(e.Name()), ".md") {
 			content, err := os.ReadFile(fullPath)
 			if err != nil {

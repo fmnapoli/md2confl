@@ -389,6 +389,57 @@ func TestBuildDirTree(t *testing.T) {
 	}
 }
 
+func TestBuildDirTree_SkipsEmptyDirs(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a subdir with only non-.md files (should be pruned)
+	assetsDir := filepath.Join(dir, "assets")
+	if err := os.MkdirAll(assetsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(assetsDir, "demo.svg"), []byte("<svg/>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a subdir with .md files (should be kept)
+	guidesDir := filepath.Join(dir, "guides")
+	if err := os.MkdirAll(guidesDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(guidesDir, "intro.md"), []byte("# Intro\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a nested empty dir (grandchild has no .md either)
+	nestedEmpty := filepath.Join(dir, "empty", "deep")
+	if err := os.MkdirAll(nestedEmpty, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nestedEmpty, "data.json"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tree, err := buildDirTree(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(tree.Children) != 1 {
+		t.Fatalf("expected 1 child dir, got %d: %v", len(tree.Children), dirNames(tree.Children))
+	}
+	if tree.Children[0].Name != "guides" {
+		t.Errorf("expected child 'guides', got %q", tree.Children[0].Name)
+	}
+}
+
+func dirNames(dirs []DirEntry) []string {
+	names := make([]string, len(dirs))
+	for i, d := range dirs {
+		names[i] = d.Name
+	}
+	return names
+}
+
 func TestFindMermaidBlocks(t *testing.T) {
 	doc := &adf.Document{
 		Version: 1,
