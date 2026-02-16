@@ -61,6 +61,7 @@
         {
           "type": "media",
           "attrs": {
+            "alt": "Logo",
             "type": "external",
             "url": "logo.png"
           }

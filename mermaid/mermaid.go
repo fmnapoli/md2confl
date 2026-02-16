@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -26,7 +27,9 @@ func EnsureAvailable() error {
 
 // Renderer renders Mermaid diagram source to SVG files using mmdc.
 type Renderer struct {
-	OutputDir string // directory where SVG files are written
+	OutputDir      string // directory where SVG files are written
+	puppeteerOnce  sync.Once
+	puppeteerError error
 }
 
 // Timeout is the maximum duration for a single mermaid render.
@@ -52,15 +55,16 @@ func (r *Renderer) Render(ctx context.Context, source []byte) (string, error) {
 	}
 	defer os.Remove(inputPath)
 
-	// Write puppeteer config for --no-sandbox (required in Docker/CI).
+	// Write puppeteer config atomically (safe for parallel renders).
 	puppeteerCfg := filepath.Join(r.OutputDir, "puppeteer-config.json")
-	if _, err := os.Stat(puppeteerCfg); os.IsNotExist(err) {
+	r.puppeteerOnce.Do(func() {
 		cfg, _ := json.Marshal(map[string]any{
 			"args": []string{"--no-sandbox", "--disable-setuid-sandbox"},
 		})
-		if err := os.WriteFile(puppeteerCfg, cfg, 0644); err != nil {
-			return "", fmt.Errorf("writing puppeteer config: %w", err)
-		}
+		r.puppeteerError = os.WriteFile(puppeteerCfg, cfg, 0644)
+	})
+	if r.puppeteerError != nil {
+		return "", fmt.Errorf("writing puppeteer config: %w", r.puppeteerError)
 	}
 
 	// Apply timeout to the subprocess

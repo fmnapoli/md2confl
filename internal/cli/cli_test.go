@@ -2180,3 +2180,270 @@ func TestPrintWarningSummary_NilWarnings(t *testing.T) {
 		t.Errorf("expected no output for nil warnings, got %q", stderr.String())
 	}
 }
+
+func TestBuildDirTree_SkipsHiddenDirs(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create hidden dirs and special dirs that should be skipped
+	for _, d := range []string{".git", ".github", ".vscode", "_templates", "node_modules", "vendor"} {
+		subdir := filepath.Join(dir, d)
+		if err := os.MkdirAll(subdir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(subdir, "README.md"), []byte("# Hidden\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Create a visible dir that should be kept
+	visibleDir := filepath.Join(dir, "docs")
+	if err := os.MkdirAll(visibleDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(visibleDir, "intro.md"), []byte("# Intro\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tree, err := buildDirTree(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(tree.Children) != 1 {
+		t.Fatalf("expected 1 visible child dir, got %d: %v", len(tree.Children), dirNames(tree.Children))
+	}
+	if tree.Children[0].Name != "docs" {
+		t.Errorf("expected child 'docs', got %q", tree.Children[0].Name)
+	}
+}
+
+func TestIsLocalPath_DataURI(t *testing.T) {
+	tests := []struct {
+		path  string
+		local bool
+	}{
+		{"data:image/svg+xml;base64,PHN2Zy...", false},
+		{"data:image/png;base64,abc123", false},
+		{"./img/photo.png", true},
+	}
+	for _, tt := range tests {
+		if got := isLocalPath(tt.path); got != tt.local {
+			t.Errorf("isLocalPath(%q) = %v, want %v", tt.path, got, tt.local)
+		}
+	}
+}
+
+func TestDeriveTitleFromSource_CodeBlock(t *testing.T) {
+	app := &appEnv{}
+
+	tests := []struct {
+		name     string
+		source   string
+		fallback string
+		want     string
+	}{
+		{
+			"h1 in code block ignored",
+			"```bash\n# This is a comment\necho hello\n```\n# Real Title",
+			"fallback",
+			"Real Title",
+		},
+		{
+			"h1 before code block",
+			"# My Title\n\n```bash\n# comment\n```",
+			"fallback",
+			"My Title",
+		},
+		{
+			"only h1 in code block",
+			"```\n# Not a title\n```",
+			"fallback",
+			"fallback",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := app.deriveTitleFromSource([]byte(tt.source), tt.fallback)
+			if got != tt.want {
+				t.Errorf("expected %q, got %q", tt.want, got)
+			}
+		})
+	}
+}
+
+func TestWritePageIDMarker_PreservesPermissions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.md")
+	source := []byte("# Title\n\nContent\n")
+	if err := os.WriteFile(path, source, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &appEnv{}
+	if err := app.writePageIDMarker(path, source, "12345"); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Errorf("expected permissions 0600, got %o", info.Mode().Perm())
+	}
+}
+
+func TestWritePageIDMarker_OnlyReplacesFirstLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.md")
+	// Source with marker on first line AND in a code block
+	source := []byte("<!-- confluence-page-id: 99999 -->\n# Title\n\n```\n<!-- confluence-page-id: 99999 -->\n```\n")
+	if err := os.WriteFile(path, source, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &appEnv{}
+	if err := app.writePageIDMarker(path, source, "12345"); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	content := string(data)
+	if !strings.HasPrefix(content, "<!-- confluence-page-id: 12345 -->") {
+		t.Errorf("expected first line to be updated, got %q", content[:60])
+	}
+	// The code block marker should be unchanged
+	if !strings.Contains(content, "<!-- confluence-page-id: 99999 -->") {
+		t.Error("code block marker should not have been replaced")
+	}
+}
+
+func TestAdfUnchanged_EmptyArrayVsNull(t *testing.T) {
+	// Confluence may return null where md2confl generates []
+	existing := `{"type":"doc","version":1,"content":[{"type":"paragraph","content":null}]}`
+	newADF := `{"type":"doc","version":1,"content":[{"type":"paragraph","content":[]}]}`
+	if !adfUnchanged(existing, newADF) {
+		t.Error("expected [] and null to be treated as equivalent")
+	}
+}
+
+func TestRepoURLNormalization(t *testing.T) {
+	// Build a linkMap and test URL concatenation with repoURL
+	linkMap := map[string]string{}
+	doc := &adf.Document{
+		Version: 1,
+		Type:    "doc",
+		Content: []adf.Node{
+			{
+				Type: "paragraph",
+				Content: []adf.Node{
+					{
+						Type: "text",
+						Text: "License",
+						Marks: []adf.Mark{
+							{Type: "link", Attrs: map[string]any{"href": "LICENSE"}},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// With trailing slash
+	count := patchDocLinks(doc, "/repo", linkMap, "https://github.com/user/repo/blob/main/", "/repo")
+	if count != 1 {
+		t.Fatalf("expected 1 patched link, got %d", count)
+	}
+	href := doc.Content[0].Content[0].Marks[0].Attrs["href"].(string)
+	if href != "https://github.com/user/repo/blob/main/LICENSE" {
+		t.Errorf("expected correct URL, got %q", href)
+	}
+}
+
+func TestUploadAndPatchImages_LogsErrors(t *testing.T) {
+	// Test that uploadAndPatchImages logs warnings instead of silently swallowing errors
+	dir := t.TempDir()
+	imgPath := filepath.Join(dir, "photo.png")
+	if err := os.WriteFile(imgPath, []byte("fake-png"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	doc := &adf.Document{
+		Version: 1,
+		Type:    "doc",
+		Content: []adf.Node{
+			{
+				Type:  "mediaSingle",
+				Attrs: map[string]any{"layout": "center"},
+				Content: []adf.Node{
+					{Type: "media", Attrs: map[string]any{"type": "external", "url": "photo.png"}},
+				},
+			},
+		},
+	}
+
+	// Create a server that accepts upload but fails on GetPage
+	pageCounter := 0
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// UploadAttachment
+		if r.Method == "POST" && strings.Contains(r.URL.Path, "/child/attachment") {
+			json.NewEncoder(w).Encode(map[string]any{
+				"results": []map[string]any{
+					{"id": "att-1", "title": "photo.png", "extensions": map[string]any{"fileId": "file-1"}},
+				},
+			})
+			return
+		}
+		// GetPage - fail
+		if r.Method == "GET" && strings.Contains(r.URL.Path, "/pages/") {
+			pageCounter++
+			http.Error(w, "internal error", 500)
+			return
+		}
+		http.Error(w, "not found", 404)
+	}))
+	defer ts.Close()
+
+	client, err := confluence.NewClient(confluence.Config{
+		BaseURL:  ts.URL,
+		SpaceKey: "TEST",
+		Email:    "test@test.com",
+		Token:    "token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.SetHTTPClient(ts.Client())
+
+	var stderr bytes.Buffer
+	warnings := make([]string, 0)
+	app := &appEnv{
+		stdout:     &bytes.Buffer{},
+		stderr:     &stderr,
+		outputMu:   &sync.Mutex{},
+		warnings:   &warnings,
+		warningsMu: &sync.Mutex{},
+		logger:     slog.New(slog.NewTextHandler(&stderr, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	}
+
+	result := &confluence.PublishResult{
+		PageID:  "page-1",
+		Title:   "Test",
+		PageURL: "https://test.atlassian.net/wiki/pages/page-1",
+	}
+
+	// Should not return error (non-fatal), but should log warning
+	err = app.uploadAndPatchImages(client, doc, result, dir)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if len(warnings) == 0 {
+		t.Error("expected warnings to be logged for GetPage failure")
+	}
+}

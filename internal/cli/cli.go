@@ -280,7 +280,12 @@ func (app *appEnv) run() error {
 	// Auto-detect repo URL for resolving non-Markdown links
 	if app.repoURL == "" {
 		app.repoURL, app.repoRoot = detectRepoURL()
-	} else if app.repoRoot == "" {
+	}
+	// Ensure trailing slash for correct URL concatenation
+	if app.repoURL != "" && !strings.HasSuffix(app.repoURL, "/") {
+		app.repoURL += "/"
+	}
+	if app.repoURL != "" && app.repoRoot == "" {
 		// Explicit repo-url but no root — try git, fall back to .git walk
 		app.repoRoot, _ = gitOutput("rev-parse", "--show-toplevel")
 		if app.repoRoot == "" {
@@ -560,10 +565,13 @@ func (app *appEnv) uploadAndPatchImages(client *confluence.Client, doc *adf.Docu
 
 	attachmentMap := map[string]string{} // url -> attachment ID
 	var attMu sync.Mutex
-	g, _ := errgroup.WithContext(context.Background())
+	g, ctx := errgroup.WithContext(context.Background())
 	g.SetLimit(8)
 	for _, imgURL := range localImages {
 		g.Go(func() error {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			imgPath := imgURL
 			if !filepath.IsAbs(imgURL) {
 				imgPath = filepath.Join(basePath, imgURL)
@@ -590,15 +598,24 @@ func (app *appEnv) uploadAndPatchImages(client *confluence.Client, doc *adf.Docu
 	if len(attachmentMap) > 0 {
 		patchLocalImages(doc, attachmentMap, result.PageID)
 		patchedJSON, err := json.MarshalIndent(doc, "", "  ")
-		if err == nil {
-			currentPage, err := client.GetPage(result.PageID)
-			if err == nil {
-				updated, err := client.UpdatePage(result.PageID, result.Title, string(patchedJSON), currentPage.Version.Number)
-				if err == nil {
-					*result = *updated
-				}
-			}
+		if err != nil {
+			app.logger.Warn("Failed to marshal patched ADF", "error", err)
+			app.addWarning(fmt.Sprintf("failed to marshal patched ADF: %v", err))
+			return nil
 		}
+		currentPage, err := client.GetPage(result.PageID)
+		if err != nil {
+			app.logger.Warn("Failed to get page for image patch", "pageID", result.PageID, "error", err)
+			app.addWarning(fmt.Sprintf("failed to get page %s for image patch: %v", result.PageID, err))
+			return nil
+		}
+		updated, err := client.UpdatePage(result.PageID, result.Title, string(patchedJSON), currentPage.Version.Number)
+		if err != nil {
+			app.logger.Warn("Failed to update page with patched images", "pageID", result.PageID, "error", err)
+			app.addWarning(fmt.Sprintf("failed to update page %s with patched images: %v", result.PageID, err))
+			return nil
+		}
+		*result = *updated
 	}
 	return nil
 }
@@ -618,15 +635,31 @@ func (app *appEnv) wrapConfluenceError(err error) error {
 func (app *appEnv) writePageIDMarker(path string, source []byte, pageID string) error {
 	marker := fmt.Sprintf("<!-- confluence-page-id: %s -->", pageID)
 
-	// If marker already exists, replace it
+	// Preserve original file permissions
+	perm := os.FileMode(0644)
+	if info, err := os.Stat(path); err == nil {
+		perm = info.Mode().Perm()
+	}
+
+	// If marker already exists on the first line, replace only that occurrence
 	if pageIDRegex.Match(source) {
-		updated := pageIDRegex.ReplaceAll(source, []byte(marker))
-		return os.WriteFile(path, updated, 0644)
+		firstLine := source
+		if idx := bytes.IndexByte(source, '\n'); idx >= 0 {
+			firstLine = source[:idx]
+		}
+		if pageIDRegex.Match(firstLine) {
+			updated := make([]byte, 0, len(source))
+			updated = append(updated, pageIDRegex.ReplaceAll(firstLine, []byte(marker))...)
+			if idx := bytes.IndexByte(source, '\n'); idx >= 0 {
+				updated = append(updated, source[idx:]...)
+			}
+			return os.WriteFile(path, updated, perm)
+		}
 	}
 
 	// Prepend marker to file
 	updated := append([]byte(marker+"\n"), source...)
-	return os.WriteFile(path, updated, 0644)
+	return os.WriteFile(path, updated, perm)
 }
 
 // DirEntry represents a directory in the hierarchy.
@@ -725,7 +758,13 @@ func buildDirTree(root string) (*DirEntry, error) {
 	}
 
 	for _, e := range entries {
-		fullPath := filepath.Join(root, e.Name())
+		name := e.Name()
+		// Skip hidden directories and common non-content directories
+		if strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") ||
+			name == "node_modules" || name == "vendor" {
+			continue
+		}
+		fullPath := filepath.Join(root, name)
 		if e.IsDir() {
 			child, err := buildDirTree(fullPath)
 			if err != nil {
@@ -831,9 +870,21 @@ func (app *appEnv) publishDirTree(client *confluence.Client, spaceID, parentID s
 		if err != nil {
 			return app.wrapConfluenceError(err)
 		}
-		dirResult, err = client.UpdatePage(existingPageID, title, adfStr, page.Version.Number)
-		if err != nil {
-			return app.wrapConfluenceError(err)
+		if adfUnchanged(page.Body.AtlasDocFormat.Value, adfStr) {
+			app.logger.Info("Skipped (unchanged)", "title", title)
+			dirResult = &confluence.PublishResult{
+				PageID:   page.ID,
+				PageURL:  page.Links.Base + page.Links.WebUI,
+				Title:    title,
+				SpaceKey: app.space,
+				Version:  page.Version.Number,
+				Action:   "skipped",
+			}
+		} else {
+			dirResult, err = client.UpdatePage(existingPageID, title, adfStr, page.Version.Number)
+			if err != nil {
+				return app.wrapConfluenceError(err)
+			}
 		}
 	} else if app.force {
 		existing, err := client.FindByTitle(spaceID, title)
@@ -841,9 +892,25 @@ func (app *appEnv) publishDirTree(client *confluence.Client, spaceID, parentID s
 			return app.wrapConfluenceError(err)
 		}
 		if existing != nil {
-			dirResult, err = client.UpdatePage(existing.ID, title, adfStr, existing.Version.Number)
+			page, err := client.GetPage(existing.ID)
 			if err != nil {
 				return app.wrapConfluenceError(err)
+			}
+			if adfUnchanged(page.Body.AtlasDocFormat.Value, adfStr) {
+				app.logger.Info("Skipped (unchanged)", "title", title)
+				dirResult = &confluence.PublishResult{
+					PageID:   page.ID,
+					PageURL:  page.Links.Base + page.Links.WebUI,
+					Title:    title,
+					SpaceKey: app.space,
+					Version:  page.Version.Number,
+					Action:   "skipped",
+				}
+			} else {
+				dirResult, err = client.UpdatePage(existing.ID, title, adfStr, existing.Version.Number)
+				if err != nil {
+					return app.wrapConfluenceError(err)
+				}
 			}
 		} else {
 			dirResult, err = client.CreatePage(spaceID, title, parentID, adfStr)
@@ -920,9 +987,21 @@ func (app *appEnv) publishDirTree(client *confluence.Client, spaceID, parentID s
 			if err != nil {
 				return app.wrapConfluenceError(err)
 			}
-			childResult, err = client.UpdatePage(childPageID, childTitle, childADF, page.Version.Number)
-			if err != nil {
-				return app.wrapConfluenceError(err)
+			if adfUnchanged(page.Body.AtlasDocFormat.Value, childADF) {
+				app.logger.Info("Skipped (unchanged)", "title", childTitle)
+				childResult = &confluence.PublishResult{
+					PageID:   page.ID,
+					PageURL:  page.Links.Base + page.Links.WebUI,
+					Title:    childTitle,
+					SpaceKey: app.space,
+					Version:  page.Version.Number,
+					Action:   "skipped",
+				}
+			} else {
+				childResult, err = client.UpdatePage(childPageID, childTitle, childADF, page.Version.Number)
+				if err != nil {
+					return app.wrapConfluenceError(err)
+				}
 			}
 		} else if app.force {
 			existing, err := client.FindByTitle(spaceID, childTitle)
@@ -930,9 +1009,25 @@ func (app *appEnv) publishDirTree(client *confluence.Client, spaceID, parentID s
 				return app.wrapConfluenceError(err)
 			}
 			if existing != nil {
-				childResult, err = client.UpdatePage(existing.ID, childTitle, childADF, existing.Version.Number)
+				page, err := client.GetPage(existing.ID)
 				if err != nil {
 					return app.wrapConfluenceError(err)
+				}
+				if adfUnchanged(page.Body.AtlasDocFormat.Value, childADF) {
+					app.logger.Info("Skipped (unchanged)", "title", childTitle)
+					childResult = &confluence.PublishResult{
+						PageID:   page.ID,
+						PageURL:  page.Links.Base + page.Links.WebUI,
+						Title:    childTitle,
+						SpaceKey: app.space,
+						Version:  page.Version.Number,
+						Action:   "skipped",
+					}
+				} else {
+					childResult, err = client.UpdatePage(existing.ID, childTitle, childADF, existing.Version.Number)
+					if err != nil {
+						return app.wrapConfluenceError(err)
+					}
 				}
 			} else {
 				childResult, err = client.CreatePage(spaceID, childTitle, dirResult.PageID, childADF)
@@ -940,20 +1035,17 @@ func (app *appEnv) publishDirTree(client *confluence.Client, spaceID, parentID s
 					return app.wrapConfluenceError(err)
 				}
 			}
-			if app.writeMarker {
-				if err := app.writePageIDMarker(f.Path, f.Content, childResult.PageID); err != nil {
-					app.logger.Warn("Could not write page-id marker", "error", err)
-				}
-			}
 		} else {
 			childResult, err = client.CreatePage(spaceID, childTitle, dirResult.PageID, childADF)
 			if err != nil {
 				return app.wrapConfluenceError(err)
 			}
-			if app.writeMarker {
-				if err := app.writePageIDMarker(f.Path, f.Content, childResult.PageID); err != nil {
-					app.logger.Warn("Could not write page-id marker", "error", err)
-				}
+		}
+
+		// Write marker for child file if requested
+		if app.writeMarker && childResult.PageID != "" {
+			if err := app.writePageIDMarker(f.Path, f.Content, childResult.PageID); err != nil {
+				app.logger.Warn("Could not write page-id marker", "error", err)
 			}
 		}
 
@@ -994,8 +1086,17 @@ func (app *appEnv) publishDirTree(client *confluence.Client, spaceID, parentID s
 }
 
 func (app *appEnv) deriveTitleFromSource(source []byte, fallback string) string {
+	inFence := false
 	for _, line := range strings.Split(string(source), "\n") {
-		if after, found := strings.CutPrefix(strings.TrimSpace(line), "# "); found {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		if after, found := strings.CutPrefix(trimmed, "# "); found {
 			return after
 		}
 	}
@@ -1007,8 +1108,17 @@ func (app *appEnv) deriveTitle(path string, source []byte) string {
 		return app.title
 	}
 	if source != nil {
+		inFence := false
 		for _, line := range strings.Split(string(source), "\n") {
-			if after, found := strings.CutPrefix(strings.TrimSpace(line), "# "); found {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "```") {
+				inFence = !inFence
+				continue
+			}
+			if inFence {
+				continue
+			}
+			if after, found := strings.CutPrefix(trimmed, "# "); found {
 				return after
 			}
 		}
@@ -1021,7 +1131,8 @@ func (app *appEnv) deriveTitle(path string, source []byte) string {
 func isLocalPath(path string) bool {
 	return !strings.HasPrefix(path, "http://") &&
 		!strings.HasPrefix(path, "https://") &&
-		!strings.HasPrefix(path, "//")
+		!strings.HasPrefix(path, "//") &&
+		!strings.HasPrefix(path, "data:")
 }
 
 // findLocalImages walks the ADF tree and collects local image URLs.
@@ -1161,11 +1272,11 @@ func renderMermaidBlocks(doc *adf.Document) (bool, error) {
 		svgPath string
 	}
 	results := make([]renderResult, len(blocks))
-	g, _ := errgroup.WithContext(context.Background())
+	g, ctx := errgroup.WithContext(context.Background())
 	g.SetLimit(2)
 	for i, block := range blocks {
 		g.Go(func() error {
-			svgPath, err := renderer.Render(context.Background(), []byte(block.source))
+			svgPath, err := renderer.Render(ctx, []byte(block.source))
 			if err != nil {
 				return fmt.Errorf("rendering mermaid diagram: %w", err)
 			}
@@ -1221,7 +1332,7 @@ func (app *appEnv) resolveInterDocLinksFromResults() error {
 	}
 	client.SetLogger(app.logger)
 
-	g, _ := errgroup.WithContext(context.Background())
+	g, ctx := errgroup.WithContext(context.Background())
 	g.SetLimit(4)
 	for absPath, res := range app.docResults {
 		if res.finalADF == nil {
@@ -1240,6 +1351,9 @@ func (app *appEnv) resolveInterDocLinksFromResults() error {
 		}
 
 		g.Go(func() error {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			if err := updatePageWithRetry(client, res.pageID, res.title, string(patchedJSON)); err != nil {
 				return fmt.Errorf("updating page %s with resolved links: %w", res.pageID, err)
 			}
@@ -1435,9 +1549,44 @@ func adfUnchanged(existing, newADF string) bool {
 	if err := json.Unmarshal([]byte(newADF), &newDoc); err != nil {
 		return false
 	}
+	normalizeJSON(existingDoc)
+	normalizeJSON(newDoc)
 	a, _ := json.Marshal(existingDoc)
 	b, _ := json.Marshal(newDoc)
 	return string(a) == string(b)
+}
+
+// normalizeJSON recursively normalizes a decoded JSON value so that
+// null and empty arrays/objects are treated equivalently.
+func normalizeJSON(v any) {
+	switch val := v.(type) {
+	case map[string]any:
+		for k, child := range val {
+			switch c := child.(type) {
+			case []any:
+				if len(c) == 0 {
+					val[k] = nil
+				} else {
+					normalizeJSON(c)
+				}
+			case map[string]any:
+				normalizeJSON(c)
+			}
+		}
+	case []any:
+		for i, child := range val {
+			switch c := child.(type) {
+			case []any:
+				if len(c) == 0 {
+					val[i] = nil
+				} else {
+					normalizeJSON(c)
+				}
+			case map[string]any:
+				normalizeJSON(c)
+			}
+		}
+	}
 }
 
 // lockOutput acquires the output mutex and returns an unlock function.

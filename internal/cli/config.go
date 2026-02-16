@@ -179,10 +179,13 @@ func (app *appEnv) runDocuments(inputFilter string) error {
 
 	// First pass: publish all documents (parallel)
 	app.docResultsMu = &mu
-	g, _ := errgroup.WithContext(context.Background())
+	g, ctx := errgroup.WithContext(context.Background())
 	g.SetLimit(app.concurrency)
 	for _, doc := range filtered {
 		g.Go(func() error {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			clone := app.withDocumentConfig(doc)
 			if err := clone.run(); err != nil {
 				return fmt.Errorf("processing %q: %w", doc.Input, err)

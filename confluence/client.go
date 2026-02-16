@@ -62,7 +62,7 @@ func NewClient(cfg Config) (*Client, error) {
 	baseURL := strings.TrimRight(cfg.BaseURL, "/")
 	return &Client{
 		config:       cfg,
-		httpClient:   &http.Client{Timeout: 30 * time.Second},
+		httpClient:   &http.Client{Timeout: 2 * time.Minute},
 		baseAPIURL:   baseURL + "/wiki/api/v2",
 		logger:       slog.Default(),
 		maxRetries:   3,
@@ -458,7 +458,7 @@ func (c *Client) UploadAttachment(pageID, filePath string) (string, error) {
 
 	baseURL := strings.TrimRight(c.config.BaseURL, "/")
 	apiURL := fmt.Sprintf("%s/wiki/rest/api/content/%s/child/attachment", baseURL, pageID)
-	req, err := http.NewRequest("POST", apiURL, &buf)
+	req, err := http.NewRequest("POST", apiURL, bytes.NewReader(buf.Bytes()))
 	if err != nil {
 		return "", err
 	}

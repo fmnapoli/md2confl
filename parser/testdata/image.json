@@ -36,6 +36,7 @@
         {
           "type": "media",
           "attrs": {
+            "alt": "screenshot",
             "type": "external",
             "url": "screenshot.png"
           }
@@ -64,6 +65,7 @@
         {
           "type": "media",
           "attrs": {
+            "alt": "Gopher",
             "type": "external",
             "url": "https://go.dev/blog/gopher/header.jpg"
           }
@@ -101,6 +103,7 @@
         {
           "type": "media",
           "attrs": {
+            "alt": "icon",
             "type": "external",
             "url": "icon.png"
           }
@@ -129,6 +132,7 @@
         {
           "type": "media",
           "attrs": {
+            "alt": "first",
             "type": "external",
             "url": "first.png"
           }
@@ -144,6 +148,7 @@
         {
           "type": "media",
           "attrs": {
+            "alt": "second",
             "type": "external",
             "url": "second.png"
           }

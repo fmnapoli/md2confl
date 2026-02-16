@@ -457,3 +457,105 @@ func TestUploadAttachment_FallbackToAttID(t *testing.T) {
 		t.Errorf("expected fallback to att123, got %s", id)
 	}
 }
+
+func TestRetry_429WithRetryAfter(t *testing.T) {
+	attempts := 0
+	ts, client := newTestServer(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts < 2 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(429)
+			_, _ = w.Write([]byte(`{"message":"Rate limited"}`))
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{
+				{"id": "123456", "key": "TEST"},
+			},
+		})
+	})
+	defer ts.Close()
+
+	start := time.Now()
+	id, err := client.ResolveSpaceID("TEST")
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("expected retry to succeed, got: %v", err)
+	}
+	if id != "123456" {
+		t.Errorf("expected 123456, got %s", id)
+	}
+	if attempts != 2 {
+		t.Errorf("expected 2 attempts, got %d", attempts)
+	}
+	// Should have waited at least the Retry-After duration (1 ms in test, since initialDelay is 1ms)
+	// The Retry-After header says 1 second, so it should wait ~1s
+	if elapsed < 900*time.Millisecond {
+		t.Errorf("expected wait of ~1s from Retry-After, but elapsed only %s", elapsed)
+	}
+}
+
+func TestRetry_429Exhausted(t *testing.T) {
+	attempts := 0
+	ts, client := newTestServer(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		w.WriteHeader(429)
+		_, _ = w.Write([]byte(`{"message":"Rate limited"}`))
+	})
+	defer ts.Close()
+
+	_, err := client.ResolveSpaceID("TEST")
+	if err == nil {
+		t.Fatal("expected error after exhausting retries")
+	}
+	if attempts != 3 {
+		t.Errorf("expected 3 attempts (maxRetries), got %d", attempts)
+	}
+}
+
+func TestUploadAttachment_RetryableBody(t *testing.T) {
+	dir := t.TempDir()
+	testFile := filepath.Join(dir, "test.png")
+	if err := os.WriteFile(testFile, []byte("fake-png-data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	attempts := 0
+	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		body, _ := io.ReadAll(r.Body)
+
+		if attempts < 2 {
+			// Verify body is not empty on first attempt
+			if len(body) == 0 {
+				t.Errorf("attempt %d: request body was empty", attempts)
+			}
+			w.WriteHeader(500)
+			_, _ = w.Write([]byte("server error"))
+			return
+		}
+
+		// Second attempt should also have the full body (not empty from consumed buffer)
+		if len(body) == 0 {
+			t.Errorf("attempt %d: request body was empty on retry", attempts)
+		}
+
+		json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{
+				{"id": "att-1", "title": "test.png", "extensions": map[string]any{"fileId": "file-1"}},
+			},
+		})
+	})
+	defer ts.Close()
+
+	id, err := client.UploadAttachment("999", testFile)
+	if err != nil {
+		t.Fatalf("expected retry to succeed, got: %v", err)
+	}
+	if id != "file-1" {
+		t.Errorf("expected file-1, got %s", id)
+	}
+	if attempts != 2 {
+		t.Errorf("expected 2 attempts, got %d", attempts)
+	}
+}

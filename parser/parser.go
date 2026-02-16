@@ -180,6 +180,15 @@ func (w *walker) walk(node ast.Node, entering bool) (ast.WalkStatus, error) {
 						attrs = map[string]any{"order": n.Start}
 					}
 				}
+				// Convert stray taskItem nodes to listItem (mixed lists)
+				for i := range content {
+					if content[i].Type == "taskItem" {
+						content[i].Type = "listItem"
+						content[i].Attrs = nil
+						// Wrap inline content in a paragraph for listItem
+						content[i].Content = []adf.Node{{Type: "paragraph", Content: content[i].Content}}
+					}
+				}
 				w.append(adf.Node{
 					Type:    nodeType,
 					Attrs:   attrs,
@@ -442,7 +451,10 @@ func (w *walker) walk(node ast.Node, entering bool) (ast.WalkStatus, error) {
 				mark.Attrs["title"] = title
 			}
 			for i := range content {
-				content[i].Marks = append(content[i].Marks, mark)
+				// Only text nodes support link marks in ADF
+				if content[i].Type == "text" || content[i].Type == "mediaInline" {
+					content[i].Marks = append(content[i].Marks, mark)
+				}
 			}
 			for _, c := range content {
 				w.append(c)
@@ -479,11 +491,15 @@ func (w *walker) walk(node ast.Node, entering bool) (ast.WalkStatus, error) {
 				})
 			} else {
 				url := string(n.Destination)
+				mediaAttrs := map[string]any{"type": "external", "url": url}
+				if alt := imageAltText(n, w.source); alt != "" {
+					mediaAttrs["alt"] = alt
+				}
 				w.append(adf.Node{
 					Type:  "mediaSingle",
 					Attrs: map[string]any{"layout": "center"},
 					Content: []adf.Node{
-						{Type: "media", Attrs: map[string]any{"type": "external", "url": url}},
+						{Type: "media", Attrs: mediaAttrs},
 					},
 				})
 			}
