@@ -237,8 +237,9 @@ func (c *Client) ResolveSpaceID(spaceKey string) (string, error) {
 
 // pageResponse represents the API response for page operations.
 type pageResponse struct {
-	ID      string `json:"id"`
-	Title   string `json:"title"`
+	ID       string `json:"id"`
+	ParentID string `json:"parentId"`
+	Title    string `json:"title"`
 	Version struct {
 		Number int `json:"number"`
 	} `json:"version"`
@@ -413,6 +414,29 @@ func (c *Client) FindByTitle(spaceID, title string) (*pageResponse, error) {
 		return nil, nil
 	}
 	return &result.Results[0], nil
+}
+
+// MovePage moves a page to be a child of the target parent using the v1 API.
+// Endpoint: PUT /wiki/rest/api/content/{pageID}/move/append/{targetParentID}
+func (c *Client) MovePage(pageID, targetParentID string) error {
+	baseURL := strings.TrimRight(c.config.BaseURL, "/")
+	apiURL := fmt.Sprintf("%s/wiki/rest/api/content/%s/move/append/%s", baseURL, pageID, targetParentID)
+	req, err := http.NewRequest("PUT", apiURL, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.doRequest(req)
+	if err != nil {
+		return &APIError{Category: ErrCategoryNetwork, Message: fmt.Sprintf("network error: %v", err)}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return c.handleErrorResponse(resp)
+	}
+
+	return nil
 }
 
 // attachmentResult holds the parsed fields from an attachment API response entry.

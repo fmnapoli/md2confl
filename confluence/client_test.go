@@ -559,3 +559,63 @@ func TestUploadAttachment_RetryableBody(t *testing.T) {
 		t.Errorf("expected 2 attempts, got %d", attempts)
 	}
 }
+
+func TestMovePage(t *testing.T) {
+	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "PUT" {
+			t.Errorf("expected PUT, got %s", r.Method)
+		}
+		expectedPath := "/wiki/rest/api/content/111/move/append/222"
+		if r.URL.Path != expectedPath {
+			t.Errorf("expected path %s, got %s", expectedPath, r.URL.Path)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"pageId": "111"})
+	})
+	defer ts.Close()
+
+	err := client.MovePage("111", "222")
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMovePage_NotFound(t *testing.T) {
+	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(404)
+		_, _ = w.Write([]byte(`{"message":"page not found"}`))
+	})
+	defer ts.Close()
+
+	err := client.MovePage("999", "222")
+	if err == nil {
+		t.Fatal("expected error for 404")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected APIError, got %T", err)
+	}
+	if apiErr.Category != ErrCategoryNotFound {
+		t.Errorf("expected not_found, got %s", apiErr.Category)
+	}
+}
+
+func TestGetPage_ParentID(t *testing.T) {
+	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":       "111",
+			"parentId": "222",
+			"title":    "Child Page",
+			"version":  map[string]any{"number": 1},
+			"_links":   map[string]any{"webui": "/pages/111", "base": "https://test.atlassian.net/wiki"},
+		})
+	})
+	defer ts.Close()
+
+	page, err := client.GetPage("111")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.ParentID != "222" {
+		t.Errorf("expected parentID 222, got %s", page.ParentID)
+	}
+}

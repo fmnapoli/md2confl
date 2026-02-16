@@ -54,6 +54,22 @@ type publishInput struct {
 	inputPath string // for write-marker
 }
 
+// moveIfNeeded moves a page to the desired parent if it differs from the current one.
+func (app *appEnv) moveIfNeeded(client *confluence.Client, pageID, currentParentID, desiredParentID string) error {
+	if desiredParentID == "" || currentParentID == desiredParentID {
+		return nil
+	}
+	if app.dryRun {
+		app.logger.Info("Would move page", "pageID", pageID, "from", currentParentID, "to", desiredParentID)
+		return nil
+	}
+	app.logger.Info("Moving page", "pageID", pageID, "from", currentParentID, "to", desiredParentID)
+	if err := client.MovePage(pageID, desiredParentID); err != nil {
+		return app.wrapConfluenceError(err)
+	}
+	return nil
+}
+
 // publishOrSkip encapsulates the create/update/skip logic that was previously
 // duplicated in handlePublish and publishDirTree.
 func (app *appEnv) publishOrSkip(in publishInput) (*confluence.PublishResult, error) {
@@ -62,20 +78,27 @@ func (app *appEnv) publishOrSkip(in publishInput) (*confluence.PublishResult, er
 		if err != nil {
 			return nil, app.wrapConfluenceError(err)
 		}
+
+		var result *confluence.PublishResult
 		if adf.IsUnchanged(page.Body.AtlasDocFormat.Value, in.adfStr) {
 			app.logger.Info("Skipped (unchanged)", "title", in.title)
-			return &confluence.PublishResult{
+			result = &confluence.PublishResult{
 				PageID:   page.ID,
 				PageURL:  page.Links.Base + page.Links.WebUI,
 				Title:    in.title,
 				SpaceKey: app.space,
 				Version:  page.Version.Number,
 				Action:   "skipped",
-			}, nil
+			}
+		} else {
+			result, err = in.client.UpdatePage(in.pageID, in.title, in.adfStr, page.Version.Number)
+			if err != nil {
+				return nil, app.wrapConfluenceError(err)
+			}
 		}
-		result, err := in.client.UpdatePage(in.pageID, in.title, in.adfStr, page.Version.Number)
-		if err != nil {
-			return nil, app.wrapConfluenceError(err)
+
+		if err := app.moveIfNeeded(in.client, in.pageID, page.ParentID, in.parentID); err != nil {
+			return nil, err
 		}
 		return result, nil
 	}
@@ -90,20 +113,27 @@ func (app *appEnv) publishOrSkip(in publishInput) (*confluence.PublishResult, er
 			if err != nil {
 				return nil, app.wrapConfluenceError(err)
 			}
+
+			var result *confluence.PublishResult
 			if adf.IsUnchanged(page.Body.AtlasDocFormat.Value, in.adfStr) {
 				app.logger.Info("Skipped (unchanged)", "title", in.title)
-				return &confluence.PublishResult{
+				result = &confluence.PublishResult{
 					PageID:   page.ID,
 					PageURL:  page.Links.Base + page.Links.WebUI,
 					Title:    in.title,
 					SpaceKey: app.space,
 					Version:  page.Version.Number,
 					Action:   "skipped",
-				}, nil
+				}
+			} else {
+				result, err = in.client.UpdatePage(existing.ID, in.title, in.adfStr, existing.Version.Number)
+				if err != nil {
+					return nil, app.wrapConfluenceError(err)
+				}
 			}
-			result, err := in.client.UpdatePage(existing.ID, in.title, in.adfStr, existing.Version.Number)
-			if err != nil {
-				return nil, app.wrapConfluenceError(err)
+
+			if err := app.moveIfNeeded(in.client, existing.ID, page.ParentID, in.parentID); err != nil {
+				return nil, err
 			}
 			return result, nil
 		}

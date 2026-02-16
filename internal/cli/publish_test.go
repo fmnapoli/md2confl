@@ -185,6 +185,222 @@ func TestWritePageIDMarker_OnlyReplacesFirstLine(t *testing.T) {
 	}
 }
 
+func newTestApp(ts *httptest.Server, opts ...func(*appEnv)) (*appEnv, *confluence.Client) {
+	client, _ := confluence.NewClient(confluence.Config{
+		BaseURL:  ts.URL,
+		SpaceKey: "TEST",
+		Email:    "test@test.com",
+		Token:    "token",
+	})
+	client.SetHTTPClient(ts.Client())
+
+	var stderr bytes.Buffer
+	warnings := make([]string, 0)
+	app := &appEnv{
+		space:      "TEST",
+		force:      true,
+		stdout:     &bytes.Buffer{},
+		stderr:     &stderr,
+		outputMu:   &sync.Mutex{},
+		warnings:   &warnings,
+		warningsMu: &sync.Mutex{},
+		logger:     slog.New(slog.NewTextHandler(&stderr, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	}
+	for _, opt := range opts {
+		opt(app)
+	}
+	return app, client
+}
+
+func TestPublishOrSkip_MovesPageWhenParentDiffers(t *testing.T) {
+	moved := false
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/pages/111"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"id":       "111",
+				"parentId": "old-parent",
+				"title":    "Test Page",
+				"version":  map[string]any{"number": 3},
+				"body":     map[string]any{"atlas_doc_format": map[string]any{"value": `{"changed":true}`}},
+				"_links":   map[string]any{"webui": "/pages/111", "base": "https://test.atlassian.net/wiki"},
+			})
+		case r.Method == "PUT" && strings.Contains(r.URL.Path, "/move/append/new-parent"):
+			moved = true
+			json.NewEncoder(w).Encode(map[string]any{"pageId": "111"})
+		case r.Method == "PUT" && strings.Contains(r.URL.Path, "/pages/111"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"id":      "111",
+				"title":   "Test Page",
+				"version": map[string]any{"number": 4},
+				"_links":  map[string]any{"webui": "/pages/111", "base": "https://test.atlassian.net/wiki"},
+			})
+		default:
+			http.Error(w, "not found", 404)
+		}
+	}))
+	defer ts.Close()
+
+	app, client := newTestApp(ts)
+	result, err := app.publishOrSkip(publishInput{
+		client:   client,
+		spaceID:  "space-1",
+		parentID: "new-parent",
+		title:    "Test Page",
+		pageID:   "111",
+		adfStr:   `{"new":"content"}`,
+		force:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Action != "updated" {
+		t.Errorf("expected action 'updated', got %s", result.Action)
+	}
+	if !moved {
+		t.Error("expected MovePage to be called")
+	}
+}
+
+func TestPublishOrSkip_SkipsMoveWhenParentCorrect(t *testing.T) {
+	moved := false
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/pages/111"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"id":       "111",
+				"parentId": "correct-parent",
+				"title":    "Test Page",
+				"version":  map[string]any{"number": 3},
+				"body":     map[string]any{"atlas_doc_format": map[string]any{"value": `{"same":"content"}`}},
+				"_links":   map[string]any{"webui": "/pages/111", "base": "https://test.atlassian.net/wiki"},
+			})
+		case r.Method == "PUT" && strings.Contains(r.URL.Path, "/move/"):
+			moved = true
+			json.NewEncoder(w).Encode(map[string]any{"pageId": "111"})
+		default:
+			http.Error(w, "not found", 404)
+		}
+	}))
+	defer ts.Close()
+
+	app, client := newTestApp(ts)
+	result, err := app.publishOrSkip(publishInput{
+		client:   client,
+		spaceID:  "space-1",
+		parentID: "correct-parent",
+		title:    "Test Page",
+		pageID:   "111",
+		adfStr:   `{"same":"content"}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Action != "skipped" {
+		t.Errorf("expected action 'skipped', got %s", result.Action)
+	}
+	if moved {
+		t.Error("expected MovePage NOT to be called when parent is correct")
+	}
+}
+
+func TestPublishOrSkip_DryRunLogsMove(t *testing.T) {
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/pages/111"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"id":       "111",
+				"parentId": "old-parent",
+				"title":    "Test Page",
+				"version":  map[string]any{"number": 1},
+				"body":     map[string]any{"atlas_doc_format": map[string]any{"value": `{"same":"content"}`}},
+				"_links":   map[string]any{"webui": "/pages/111", "base": "https://test.atlassian.net/wiki"},
+			})
+		case r.Method == "PUT" && strings.Contains(r.URL.Path, "/move/"):
+			t.Error("MovePage should NOT be called in dry-run mode")
+		default:
+			http.Error(w, "not found", 404)
+		}
+	}))
+	defer ts.Close()
+
+	app, client := newTestApp(ts, func(a *appEnv) { a.dryRun = true })
+	result, err := app.publishOrSkip(publishInput{
+		client:   client,
+		spaceID:  "space-1",
+		parentID: "new-parent",
+		title:    "Test Page",
+		pageID:   "111",
+		adfStr:   `{"same":"content"}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Action != "skipped" {
+		t.Errorf("expected action 'skipped', got %s", result.Action)
+	}
+
+	stderr := app.stderr.(*bytes.Buffer).String()
+	if !strings.Contains(stderr, "Would move page") {
+		t.Errorf("expected dry-run log message 'Would move page', got:\n%s", stderr)
+	}
+}
+
+func TestPublishOrSkip_ForcePathMovesPage(t *testing.T) {
+	moved := false
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/pages") && r.URL.Query().Get("title") != "":
+			json.NewEncoder(w).Encode(map[string]any{
+				"results": []map[string]any{
+					{"id": "555", "parentId": "wrong-parent", "title": "Found Page", "version": map[string]any{"number": 2}},
+				},
+			})
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/pages/555"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"id":       "555",
+				"parentId": "wrong-parent",
+				"title":    "Found Page",
+				"version":  map[string]any{"number": 2},
+				"body":     map[string]any{"atlas_doc_format": map[string]any{"value": `{"old":"content"}`}},
+				"_links":   map[string]any{"webui": "/pages/555", "base": "https://test.atlassian.net/wiki"},
+			})
+		case r.Method == "PUT" && strings.Contains(r.URL.Path, "/move/append/right-parent"):
+			moved = true
+			json.NewEncoder(w).Encode(map[string]any{"pageId": "555"})
+		case r.Method == "PUT" && strings.Contains(r.URL.Path, "/pages/555"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"id":      "555",
+				"title":   "Found Page",
+				"version": map[string]any{"number": 3},
+				"_links":  map[string]any{"webui": "/pages/555", "base": "https://test.atlassian.net/wiki"},
+			})
+		default:
+			http.Error(w, "not found", 404)
+		}
+	}))
+	defer ts.Close()
+
+	app, client := newTestApp(ts)
+	result, err := app.publishOrSkip(publishInput{
+		client:   client,
+		spaceID:  "space-1",
+		parentID: "right-parent",
+		title:    "Found Page",
+		adfStr:   `{"new":"content"}`,
+		force:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Action != "updated" {
+		t.Errorf("expected action 'updated', got %s", result.Action)
+	}
+	if !moved {
+		t.Error("expected MovePage to be called in force path")
+	}
+}
+
 func TestUploadAndPatchImages_LogsErrors(t *testing.T) {
 	dir := t.TempDir()
 	imgPath := filepath.Join(dir, "photo.png")
