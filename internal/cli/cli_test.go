@@ -1974,7 +1974,7 @@ func TestPublishDirTree_MermaidRendering(t *testing.T) {
 
 			// Extract ADF from the request body
 			var req map[string]any
-			json.Unmarshal(body, &req)
+			_ = json.Unmarshal(body, &req)
 			if bodyField, ok := req["body"].(map[string]any); ok {
 				if value, ok := bodyField["value"].(string); ok {
 					mu.Lock()
