@@ -192,11 +192,11 @@
 **Purpose**: Integration testing, docker-compose, config file support, edge cases.
 
 - [x] T057 Implement config-file-based pull in `internal/cli/pull.go` — when `--config` is specified (or `.confl2md.yml` auto-detected), iterate `pages[]` entries and pull each
-- [ ] T058 [P] Add docker-compose services (`pull-page`, `pull-docs`, `pull-dry-run`) in `docker-compose.yml` per plan.md integration testing section
+- [x] T058 [P] Add docker-compose services (`pull-page`, `pull-docs`, `pull-dry-run`) in `docker-compose.yml` per plan.md integration testing section
 - [x] T059 [P] Add edge-case handling in `internal/cli/pull.go`: overwrite existing files, empty page body (write page-id + H1 only), paginated child pages
-- [ ] T060 Run `go test ./...` and fix any failures across all packages
-- [ ] T061 Run `go vet ./...` and `golangci-lint run` — fix any warnings
-- [ ] T062 Validate quickstart.md scenarios manually or via docker-compose integration tests
+- [x] T060 Run `go test ./...` and fix any failures across all packages
+- [x] T061 Run `go vet ./...` and `golangci-lint run` — fix any warnings
+- [x] T062 Validate quickstart.md scenarios manually or via docker-compose integration tests
 - [ ] T063 Add round-trip fidelity test: publish a known Markdown file with `publish-docs`, pull it back with `pull-page`, then compare the pulled Markdown against the original source to validate SC-003 (semantic equivalence via docker-compose integration test)
 
 ---
