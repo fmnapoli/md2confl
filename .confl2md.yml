@@ -1,0 +1,19 @@
+# .confl2md.yml — Pull Confluence pages to local Markdown
+#
+# Caminho inverso do .md2confl.yml: puxa as páginas publicadas
+# e salva em docs-confl2md/ para comparação round-trip.
+#
+# Uso:
+#   bin/md2confl pull --config .confl2md.yml
+#   docker compose run --rm pull-docs
+
+url: https://fmnapoli.atlassian.net
+space: DDS
+email: fmnapoli@gmail.com
+
+pages:
+  # Página raiz (md2confl) + toda a hierarquia de docs
+  - page-id: "589826"
+    output-dir: ./docs-confl2md
+    recursive: true
+    depth: 5

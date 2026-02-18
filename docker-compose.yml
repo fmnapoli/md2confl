@@ -7,6 +7,11 @@
 #   docker compose run --rm dry-run              # Preview publish simulation
 #   docker compose run --rm dry-run-mermaid      # Preview with Mermaid → SVG
 #   docker compose run --rm publish              # Publish to Confluence Cloud
+#   docker compose run --rm publish-docs         # Publish all docs via .md2confl.yml
+#   docker compose run --rm pull-page            # Pull a single page by ID
+#   docker compose run --rm pull-docs            # Pull all pages from .confl2md.yml
+#   docker compose run --rm pull-dry-run         # Preview pull without writing files
+#   docker compose run --rm roundtrip-test       # Publish → pull → compare (fidelity test)
 #
 # All services build the image from the local Dockerfile before running.
 # Edit .env to configure Confluence credentials.
@@ -50,3 +55,46 @@ services:
       - .:/workspace
     env_file: .env
     command: ["--input", "README.md", "--publish", "--space", "${CONFLUENCE_SPACE:-TEST}", "--title", "md2confl"]
+
+  publish-docs:
+    build: .
+    network_mode: host
+    volumes:
+      - .:/workspace
+    env_file: .env
+    command: ["--config", ".md2confl.yml"]
+
+  pull-page:
+    build: .
+    network_mode: host
+    volumes:
+      - .:/workspace
+    env_file: .env
+    command: ["pull", "--page-id", "${PULL_TEST_PAGE_ID}", "--output-dir", "/workspace/pull-output"]
+
+  pull-docs:
+    build: .
+    network_mode: host
+    volumes:
+      - .:/workspace
+    env_file: .env
+    command: ["pull", "--config", ".confl2md.yml"]
+
+  pull-dry-run:
+    build: .
+    network_mode: host
+    volumes:
+      - .:/workspace
+    env_file: .env
+    command: ["pull", "--page-id", "${PULL_TEST_PAGE_ID}", "--dry-run"]
+
+  roundtrip-test:
+    build: .
+    network_mode: host
+    volumes:
+      - .:/workspace
+    env_file: .env
+    environment:
+      MD2CONFL_BIN: /usr/local/bin/md2confl
+    entrypoint: ["/bin/bash"]
+    command: ["/workspace/scripts/test-roundtrip.sh"]

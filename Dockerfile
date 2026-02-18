@@ -19,5 +19,7 @@ ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 RUN npm install -g @mermaid-js/mermaid-cli
 COPY --from=builder /md2confl /usr/local/bin/md2confl
+RUN useradd -m md2confl
+USER md2confl
 WORKDIR /workspace
 ENTRYPOINT ["md2confl"]

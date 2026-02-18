@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "type": "doc",
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {"type": "text", "text": "bold with ", "marks": [{"type": "strong"}]},
+        {"type": "text", "text": "code", "marks": [{"type": "strong"}, {"type": "code"}]}
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {"type": "text", "text": "struck with ", "marks": [{"type": "strike"}]},
+        {"type": "text", "text": "bold", "marks": [{"type": "strike"}, {"type": "strong"}]}
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {"type": "text", "text": "link with ", "marks": [{"type": "link", "attrs": {"href": "https://example.com"}}]},
+        {"type": "text", "text": "bold", "marks": [{"type": "link", "attrs": {"href": "https://example.com"}}, {"type": "strong"}]},
+        {"type": "text", "text": " part", "marks": [{"type": "link", "attrs": {"href": "https://example.com"}}]}
+      ]
+    }
+  ]
+}

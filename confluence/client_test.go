@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newTestServer(handler http.HandlerFunc) (*httptest.Server, *Client) {
@@ -25,6 +26,7 @@ func newTestServer(handler http.HandlerFunc) (*httptest.Server, *Client) {
 		Token:    "test-token",
 	})
 	client.httpClient = ts.Client()
+	client.initialDelay = time.Millisecond // fast retries for tests
 	return ts, client
 }
 
@@ -334,6 +336,103 @@ func TestUploadAttachment(t *testing.T) {
 	}
 }
 
+func TestRetry_HTMLResponse(t *testing.T) {
+	attempts := 0
+	ts, client := newTestServer(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts < 3 {
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(400)
+			_, _ = w.Write([]byte(`<!DOCTYPE HTML><HTML><BODY><H1>400 ERROR</H1>CloudFront</BODY></HTML>`))
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{
+				{"id": "123456", "key": "TEST"},
+			},
+		})
+	})
+	defer ts.Close()
+
+	id, err := client.ResolveSpaceID("TEST")
+	if err != nil {
+		t.Fatalf("expected retry to succeed, got: %v", err)
+	}
+	if id != "123456" {
+		t.Errorf("expected 123456, got %s", id)
+	}
+	if attempts != 3 {
+		t.Errorf("expected 3 attempts, got %d", attempts)
+	}
+}
+
+func TestRetry_HTMLResponse_PUT(t *testing.T) {
+	attempts := 0
+	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		body, _ := io.ReadAll(r.Body)
+
+		if attempts < 3 {
+			// Verify the retry sends the body again (not empty)
+			if len(body) == 0 {
+				t.Errorf("attempt %d: request body was empty on retry", attempts)
+			}
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(400)
+			_, _ = w.Write([]byte(`<!DOCTYPE HTML><HTML><BODY>CloudFront error</BODY></HTML>`))
+			return
+		}
+
+		// Verify the final attempt also has the body
+		if len(body) == 0 {
+			t.Errorf("attempt %d: request body was empty", attempts)
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":      "111",
+			"title":   "Test",
+			"version": map[string]any{"number": 5},
+			"_links":  map[string]any{"webui": "/pages/111", "base": "https://test.atlassian.net/wiki"},
+		})
+	})
+	defer ts.Close()
+
+	result, err := client.UpdatePage("111", "Test", `{"version":1,"type":"doc","content":[]}`, 4)
+	if err != nil {
+		t.Fatalf("expected retry to succeed, got: %v", err)
+	}
+	if result.PageID != "111" {
+		t.Errorf("expected 111, got %s", result.PageID)
+	}
+	if attempts != 3 {
+		t.Errorf("expected 3 attempts, got %d", attempts)
+	}
+}
+
+func TestHandleErrorResponse_HTMLBody(t *testing.T) {
+	ts, client := newTestServer(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(400)
+		_, _ = w.Write([]byte(`<!DOCTYPE HTML><HTML><BODY><H1>400 ERROR</H1></BODY></HTML>`))
+	})
+	defer ts.Close()
+	client.maxRetries = 1 // no retry, just test error categorization
+
+	_, err := client.ResolveSpaceID("TEST")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected APIError, got %T", err)
+	}
+	if apiErr.Category != ErrCategoryNetwork {
+		t.Errorf("expected network error, got %s", apiErr.Category)
+	}
+	if !strings.Contains(apiErr.Message, "CDN/proxy error") {
+		t.Errorf("expected CDN/proxy error message, got %q", apiErr.Message)
+	}
+}
+
 func TestUploadAttachment_FallbackToAttID(t *testing.T) {
 	dir := t.TempDir()
 	testFile := filepath.Join(dir, "test.png")
@@ -356,5 +455,407 @@ func TestUploadAttachment_FallbackToAttID(t *testing.T) {
 	}
 	if id != "att123" {
 		t.Errorf("expected fallback to att123, got %s", id)
+	}
+}
+
+func TestRetry_429WithRetryAfter(t *testing.T) {
+	attempts := 0
+	ts, client := newTestServer(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts < 2 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(429)
+			_, _ = w.Write([]byte(`{"message":"Rate limited"}`))
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{
+				{"id": "123456", "key": "TEST"},
+			},
+		})
+	})
+	defer ts.Close()
+
+	start := time.Now()
+	id, err := client.ResolveSpaceID("TEST")
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("expected retry to succeed, got: %v", err)
+	}
+	if id != "123456" {
+		t.Errorf("expected 123456, got %s", id)
+	}
+	if attempts != 2 {
+		t.Errorf("expected 2 attempts, got %d", attempts)
+	}
+	// Should have waited at least the Retry-After duration (1 ms in test, since initialDelay is 1ms)
+	// The Retry-After header says 1 second, so it should wait ~1s
+	if elapsed < 900*time.Millisecond {
+		t.Errorf("expected wait of ~1s from Retry-After, but elapsed only %s", elapsed)
+	}
+}
+
+func TestRetry_429Exhausted(t *testing.T) {
+	attempts := 0
+	ts, client := newTestServer(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		w.WriteHeader(429)
+		_, _ = w.Write([]byte(`{"message":"Rate limited"}`))
+	})
+	defer ts.Close()
+
+	_, err := client.ResolveSpaceID("TEST")
+	if err == nil {
+		t.Fatal("expected error after exhausting retries")
+	}
+	if attempts != 3 {
+		t.Errorf("expected 3 attempts (maxRetries), got %d", attempts)
+	}
+}
+
+func TestUploadAttachment_RetryableBody(t *testing.T) {
+	dir := t.TempDir()
+	testFile := filepath.Join(dir, "test.png")
+	if err := os.WriteFile(testFile, []byte("fake-png-data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	attempts := 0
+	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		body, _ := io.ReadAll(r.Body)
+
+		if attempts < 2 {
+			// Verify body is not empty on first attempt
+			if len(body) == 0 {
+				t.Errorf("attempt %d: request body was empty", attempts)
+			}
+			w.WriteHeader(500)
+			_, _ = w.Write([]byte("server error"))
+			return
+		}
+
+		// Second attempt should also have the full body (not empty from consumed buffer)
+		if len(body) == 0 {
+			t.Errorf("attempt %d: request body was empty on retry", attempts)
+		}
+
+		json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{
+				{"id": "att-1", "title": "test.png", "extensions": map[string]any{"fileId": "file-1"}},
+			},
+		})
+	})
+	defer ts.Close()
+
+	id, err := client.UploadAttachment("999", testFile)
+	if err != nil {
+		t.Fatalf("expected retry to succeed, got: %v", err)
+	}
+	if id != "file-1" {
+		t.Errorf("expected file-1, got %s", id)
+	}
+	if attempts != 2 {
+		t.Errorf("expected 2 attempts, got %d", attempts)
+	}
+}
+
+func TestMovePage(t *testing.T) {
+	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "PUT" {
+			t.Errorf("expected PUT, got %s", r.Method)
+		}
+		expectedPath := "/wiki/rest/api/content/111/move/append/222"
+		if r.URL.Path != expectedPath {
+			t.Errorf("expected path %s, got %s", expectedPath, r.URL.Path)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"pageId": "111"})
+	})
+	defer ts.Close()
+
+	err := client.MovePage("111", "222")
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMovePage_NotFound(t *testing.T) {
+	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(404)
+		_, _ = w.Write([]byte(`{"message":"page not found"}`))
+	})
+	defer ts.Close()
+
+	err := client.MovePage("999", "222")
+	if err == nil {
+		t.Fatal("expected error for 404")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected APIError, got %T", err)
+	}
+	if apiErr.Category != ErrCategoryNotFound {
+		t.Errorf("expected not_found, got %s", apiErr.Category)
+	}
+}
+
+func TestGetPage_ParentID(t *testing.T) {
+	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":       "111",
+			"parentId": "222",
+			"title":    "Child Page",
+			"version":  map[string]any{"number": 1},
+			"_links":   map[string]any{"webui": "/pages/111", "base": "https://test.atlassian.net/wiki"},
+		})
+	})
+	defer ts.Close()
+
+	page, err := client.GetPage("111")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.ParentID != "222" {
+		t.Errorf("expected parentID 222, got %s", page.ParentID)
+	}
+}
+
+func TestGetChildren(t *testing.T) {
+	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" || !strings.Contains(r.URL.Path, "/children") {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{
+				{"id": "201", "title": "Child A"},
+				{"id": "202", "title": "Child B"},
+			},
+		})
+	})
+	defer ts.Close()
+
+	children, err := client.GetChildren("100")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children) != 2 {
+		t.Fatalf("expected 2 children, got %d", len(children))
+	}
+	if children[0].ID != "201" || children[0].Title != "Child A" {
+		t.Errorf("unexpected child: %+v", children[0])
+	}
+}
+
+func TestGetChildren_Pagination(t *testing.T) {
+	callCount := 0
+	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			json.NewEncoder(w).Encode(map[string]any{
+				"results": []map[string]any{
+					{"id": "201", "title": "Child A"},
+				},
+				"_links": map[string]any{
+					"next": r.URL.Path + "?cursor=abc&limit=50",
+				},
+			})
+		} else {
+			json.NewEncoder(w).Encode(map[string]any{
+				"results": []map[string]any{
+					{"id": "202", "title": "Child B"},
+				},
+			})
+		}
+	})
+	defer ts.Close()
+
+	children, err := client.GetChildren("100")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children) != 2 {
+		t.Fatalf("expected 2 children after pagination, got %d", len(children))
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 API calls, got %d", callCount)
+	}
+}
+
+func TestGetChildren_Empty(t *testing.T) {
+	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"results": []any{},
+		})
+	})
+	defer ts.Close()
+
+	children, err := client.GetChildren("100")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children) != 0 {
+		t.Errorf("expected empty, got %d", len(children))
+	}
+}
+
+func TestGetChildren_AuthError(t *testing.T) {
+	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(401)
+		_, _ = w.Write([]byte("Unauthorized"))
+	})
+	defer ts.Close()
+
+	_, err := client.GetChildren("100")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected APIError, got %T", err)
+	}
+	if apiErr.Category != ErrCategoryAuth {
+		t.Errorf("expected auth error, got %s", apiErr.Category)
+	}
+}
+
+func TestGetChildren_NotFound(t *testing.T) {
+	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(404)
+		_, _ = w.Write([]byte(`{"message":"page not found"}`))
+	})
+	defer ts.Close()
+
+	_, err := client.GetChildren("99999")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected APIError, got %T", err)
+	}
+	if apiErr.Category != ErrCategoryNotFound {
+		t.Errorf("expected not_found, got %s", apiErr.Category)
+	}
+}
+
+func TestGetAttachments(t *testing.T) {
+	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/attachments") {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{
+				{
+					"id":           "att1",
+					"title":        "image.png",
+					"mediaType":    "image/png",
+					"downloadLink": "/wiki/download/attachments/100/image.png",
+				},
+			},
+		})
+	})
+	defer ts.Close()
+
+	atts, err := client.GetAttachments("100")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(atts) != 1 {
+		t.Fatalf("expected 1 attachment, got %d", len(atts))
+	}
+	if atts[0].Title != "image.png" {
+		t.Errorf("expected image.png, got %s", atts[0].Title)
+	}
+	if atts[0].MediaType != "image/png" {
+		t.Errorf("expected image/png, got %s", atts[0].MediaType)
+	}
+	if atts[0].DownloadLink != "/wiki/download/attachments/100/image.png" {
+		t.Errorf("unexpected download link: %s", atts[0].DownloadLink)
+	}
+}
+
+func TestGetAttachments_Pagination(t *testing.T) {
+	callCount := 0
+	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			json.NewEncoder(w).Encode(map[string]any{
+				"results": []map[string]any{
+					{"id": "att1", "title": "a.png", "mediaType": "image/png", "downloadLink": "/dl/a.png"},
+				},
+				"_links": map[string]any{
+					"next": r.URL.Path + "?cursor=xyz&limit=50",
+				},
+			})
+		} else {
+			json.NewEncoder(w).Encode(map[string]any{
+				"results": []map[string]any{
+					{"id": "att2", "title": "b.png", "mediaType": "image/png", "downloadLink": "/dl/b.png"},
+				},
+			})
+		}
+	})
+	defer ts.Close()
+
+	atts, err := client.GetAttachments("100")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(atts) != 2 {
+		t.Fatalf("expected 2 attachments, got %d", len(atts))
+	}
+}
+
+func TestGetAttachments_Empty(t *testing.T) {
+	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"results": []any{}})
+	})
+	defer ts.Close()
+
+	atts, err := client.GetAttachments("100")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(atts) != 0 {
+		t.Errorf("expected empty, got %d", len(atts))
+	}
+}
+
+func TestDownloadAttachment(t *testing.T) {
+	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/download/") {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("fake-image-data"))
+	})
+	defer ts.Close()
+
+	data, err := client.DownloadAttachment("/wiki/download/attachments/100/image.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "fake-image-data" {
+		t.Errorf("unexpected data: %s", string(data))
+	}
+}
+
+func TestDownloadAttachment_NotFound(t *testing.T) {
+	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(404)
+		_, _ = w.Write([]byte(`{"message":"not found"}`))
+	})
+	defer ts.Close()
+
+	_, err := client.DownloadAttachment("/wiki/download/attachments/100/missing.png")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected APIError, got %T", err)
+	}
+	if apiErr.Category != ErrCategoryNotFound {
+		t.Errorf("expected not_found, got %s", apiErr.Category)
 	}
 }

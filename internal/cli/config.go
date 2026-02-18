@@ -4,11 +4,14 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
+	"golang.org/x/sync/errgroup"
 	"gopkg.in/yaml.v3"
 )
 
@@ -20,6 +23,7 @@ type Config struct {
 	ParentID    string      `yaml:"parent-id"`
 	Force       *bool       `yaml:"force"`
 	WriteMarker *bool       `yaml:"write-marker"`
+	RepoURL     string      `yaml:"repo-url"`
 	Documents   []DocConfig `yaml:"documents"`
 }
 
@@ -114,6 +118,9 @@ func (app *appEnv) applyConfig(explicitFlags map[string]bool) {
 	if !explicitFlags["write-marker"] && cfg.WriteMarker != nil {
 		app.writeMarker = *cfg.WriteMarker
 	}
+	if !explicitFlags["repo-url"] && cfg.RepoURL != "" {
+		app.repoURL = cfg.RepoURL
+	}
 }
 
 // withDocumentConfig creates a shallow copy of appEnv with document-level overrides applied.
@@ -143,6 +150,7 @@ func (app *appEnv) withDocumentConfig(doc DocConfig) *appEnv {
 
 // runDocuments iterates over config documents and processes each one.
 // If inputFilter is non-empty, only matching documents are processed.
+// After publishing all documents, a second pass resolves inter-document links.
 func (app *appEnv) runDocuments(inputFilter string) error {
 	if app.config == nil || len(app.config.Documents) == 0 {
 		return fmt.Errorf("no documents defined in config")
@@ -165,11 +173,41 @@ func (app *appEnv) runDocuments(inputFilter string) error {
 		}
 	}
 
+	// Initialize shared map for collecting publish results
+	app.docResults = make(map[string]*docPublishResult)
+	var mu sync.Mutex
+
+	// First pass: publish all documents (parallel)
+	app.docResultsMu = &mu
+	g, ctx := errgroup.WithContext(context.Background())
+	g.SetLimit(app.concurrency)
 	for _, doc := range filtered {
-		clone := app.withDocumentConfig(doc)
-		if err := clone.run(); err != nil {
-			return fmt.Errorf("processing %q: %w", doc.Input, err)
+		g.Go(func() error {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			clone := app.withDocumentConfig(doc)
+			if err := clone.run(); err != nil {
+				return fmt.Errorf("processing %q: %w", doc.Input, err)
+			}
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return err
+	}
+
+	// Second pass: resolve inter-document links across all published docs
+	// (including files from directory inputs, not just the config entries).
+	if len(app.docResults) > 1 {
+		if app.dryRun {
+			app.previewInterDocLinksFromResults()
+		} else {
+			if err := app.resolveInterDocLinksFromResults(); err != nil {
+				return fmt.Errorf("resolving inter-document links: %w", err)
+			}
 		}
 	}
+
 	return nil
 }

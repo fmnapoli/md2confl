@@ -8,17 +8,45 @@
 package parser
 
 import (
+	"regexp"
+	"strconv"
+
 	"github.com/fmnapoli/md2confl/adf"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
-	east "github.com/yuin/goldmark/extension/ast"
 	"github.com/yuin/goldmark/extension"
+	east "github.com/yuin/goldmark/extension/ast"
 	"github.com/yuin/goldmark/text"
+
+	emoji "github.com/yuin/goldmark-emoji"
+	emojast "github.com/yuin/goldmark-emoji/ast"
 )
+
+// alertPattern matches GitHub-style alert markers like [!NOTE].
+var alertPattern = regexp.MustCompile(`^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]$`)
+
+// alertPanelMap maps GitHub alert types to ADF panel types.
+var alertPanelMap = map[string]string{
+	"NOTE":      "info",
+	"TIP":       "success",
+	"IMPORTANT": "note",
+	"WARNING":   "warning",
+	"CAUTION":   "error",
+}
+
+// detailsOpenRe matches the opening <details> tag (with optional attributes).
+var detailsOpenRe = regexp.MustCompile(`(?i)^<details[^>]*>`)
+
+// summaryRe extracts the content of a <summary>...</summary> tag.
+var summaryRe = regexp.MustCompile(`(?is)<summary>(.*?)</summary>`)
 
 // ConvertToADF converts Markdown source bytes to an ADF Document.
 func ConvertToADF(source []byte) (*adf.Document, error) {
-	md := goldmark.New(goldmark.WithExtensions(extension.GFM))
+	md := goldmark.New(goldmark.WithExtensions(
+		extension.GFM,
+		emoji.Emoji,
+		&superscriptExtension{},
+	))
 	reader := text.NewReader(source)
 	tree := md.Parser().Parse(reader)
 
@@ -37,8 +65,11 @@ func ConvertToADF(source []byte) (*adf.Document, error) {
 }
 
 type walker struct {
-	source []byte
-	stack  [][]adf.Node // stack of content slices for nesting
+	source         []byte
+	stack          [][]adf.Node // stack of content slices for nesting
+	localIDCounter int          // monotonic counter for taskList/taskItem localId
+	taskState      *string      // set by TaskCheckBox, consumed by ListItem
+	alertType      string       // set by Blockquote entering, consumed on exit
 }
 
 func (w *walker) push() {
@@ -55,6 +86,32 @@ func (w *walker) pop() []adf.Node {
 func (w *walker) append(node adf.Node) {
 	n := len(w.stack)
 	w.stack[n-1] = append(w.stack[n-1], node)
+}
+
+// appendWithHoist wraps content in a node of blockType, but hoists any
+// block-level children (mediaSingle) out so they become siblings instead of
+// being nested inside an inline container like paragraph.
+func (w *walker) appendWithHoist(blockType string, content []adf.Node) {
+	var inlineRun []adf.Node
+	for _, child := range content {
+		if child.Type == "mediaSingle" {
+			if len(inlineRun) > 0 {
+				w.append(adf.Node{Type: blockType, Content: inlineRun})
+				inlineRun = nil
+			}
+			w.append(child)
+		} else {
+			inlineRun = append(inlineRun, child)
+		}
+	}
+	if len(inlineRun) > 0 {
+		w.append(adf.Node{Type: blockType, Content: inlineRun})
+	}
+}
+
+func (w *walker) nextLocalID() string {
+	w.localIDCounter++
+	return strconv.Itoa(w.localIDCounter)
 }
 
 func (w *walker) walk(node ast.Node, entering bool) (ast.WalkStatus, error) {
@@ -75,17 +132,12 @@ func (w *walker) walk(node ast.Node, entering bool) (ast.WalkStatus, error) {
 		}
 
 	case *ast.Paragraph:
-		// Skip paragraphs inside list items that are the first child — goldmark wraps
-		// list item content in paragraphs, and we handle this in listItem
 		if entering {
 			w.push()
 		} else {
 			content := w.pop()
 			if len(content) > 0 {
-				w.append(adf.Node{
-					Type:    "paragraph",
-					Content: content,
-				})
+				w.appendWithHoist("paragraph", content)
 			}
 		}
 
@@ -95,42 +147,83 @@ func (w *walker) walk(node ast.Node, entering bool) (ast.WalkStatus, error) {
 		} else {
 			content := w.pop()
 			if len(content) > 0 {
-				w.append(adf.Node{
-					Type:    "paragraph",
-					Content: content,
-				})
+				w.appendWithHoist("paragraph", content)
 			}
 		}
 
+	// Phase 1: Task lists — detect taskItem children and emit taskList.
 	case *ast.List:
 		if entering {
 			w.push()
 		} else {
 			content := w.pop()
-			nodeType := "bulletList"
-			var attrs map[string]any
-			if n.IsOrdered() {
-				nodeType = "orderedList"
-				if n.Start != 1 {
-					attrs = map[string]any{"order": n.Start}
+			isTaskList := len(content) > 0
+			for _, item := range content {
+				if item.Type != "taskItem" {
+					isTaskList = false
+					break
 				}
 			}
-			w.append(adf.Node{
-				Type:    nodeType,
-				Attrs:   attrs,
-				Content: content,
-			})
+			if isTaskList {
+				w.append(adf.Node{
+					Type:    "taskList",
+					Attrs:   map[string]any{"localId": w.nextLocalID()},
+					Content: content,
+				})
+			} else {
+				nodeType := "bulletList"
+				var attrs map[string]any
+				if n.IsOrdered() {
+					nodeType = "orderedList"
+					if n.Start != 1 {
+						attrs = map[string]any{"order": n.Start}
+					}
+				}
+				// Convert stray taskItem nodes to listItem (mixed lists)
+				for i := range content {
+					if content[i].Type == "taskItem" {
+						content[i].Type = "listItem"
+						content[i].Attrs = nil
+						// Wrap inline content in a paragraph for listItem
+						content[i].Content = []adf.Node{{Type: "paragraph", Content: content[i].Content}}
+					}
+				}
+				w.append(adf.Node{
+					Type:    nodeType,
+					Attrs:   attrs,
+					Content: content,
+				})
+			}
 		}
 
+	// Phase 1: Task lists — emit taskItem when a checkbox was seen.
 	case *ast.ListItem:
 		if entering {
 			w.push()
 		} else {
 			content := w.pop()
-			w.append(adf.Node{
-				Type:    "listItem",
-				Content: content,
-			})
+			if w.taskState != nil {
+				// ADF taskItem expects inline content directly — unwrap
+				// the paragraph that goldmark wraps around list item text.
+				inline := content
+				if len(content) == 1 && content[0].Type == "paragraph" {
+					inline = content[0].Content
+				}
+				w.append(adf.Node{
+					Type: "taskItem",
+					Attrs: map[string]any{
+						"localId": w.nextLocalID(),
+						"state":   *w.taskState,
+					},
+					Content: inline,
+				})
+				w.taskState = nil
+			} else {
+				w.append(adf.Node{
+					Type:    "listItem",
+					Content: content,
+				})
+			}
 		}
 
 	case *ast.FencedCodeBlock:
@@ -184,11 +277,34 @@ func (w *walker) walk(node ast.Node, entering bool) (ast.WalkStatus, error) {
 		}
 		return ast.WalkSkipChildren, nil
 
+	// Phase 2: GitHub Alerts — detect [!TYPE] in blockquotes and emit panel.
 	case *ast.Blockquote:
 		if entering {
+			w.alertType = detectAlertType(n, w.source)
 			w.push()
 		} else {
 			content := w.pop()
+			if w.alertType != "" {
+				// ADF panels don't support codeBlock children — fall back to blockquote.
+				hasCodeBlock := false
+				for _, child := range content {
+					if child.Type == "codeBlock" {
+						hasCodeBlock = true
+						break
+					}
+				}
+				if !hasCodeBlock {
+					content = removeAlertMarker(content)
+					w.append(adf.Node{
+						Type:    "panel",
+						Attrs:   map[string]any{"panelType": alertPanelMap[w.alertType]},
+						Content: content,
+					})
+					w.alertType = ""
+					break
+				}
+				w.alertType = ""
+			}
 			w.append(adf.Node{
 				Type:    "blockquote",
 				Content: content,
@@ -254,6 +370,16 @@ func (w *walker) walk(node ast.Node, entering bool) (ast.WalkStatus, error) {
 				Type:    cellType,
 				Content: cellContent,
 			})
+		}
+
+	// Phase 1: Task lists — capture checkbox state for the enclosing ListItem.
+	case *east.TaskCheckBox:
+		if entering {
+			state := "TODO"
+			if n.IsChecked {
+				state = "DONE"
+			}
+			w.taskState = &state
 		}
 
 	// Inline nodes
@@ -324,7 +450,10 @@ func (w *walker) walk(node ast.Node, entering bool) (ast.WalkStatus, error) {
 				mark.Attrs["title"] = title
 			}
 			for i := range content {
-				content[i].Marks = append(content[i].Marks, mark)
+				// Only text nodes support link marks in ADF
+				if content[i].Type == "text" || content[i].Type == "mediaInline" {
+					content[i].Marks = append(content[i].Marks, mark)
+				}
 			}
 			for _, c := range content {
 				w.append(c)
@@ -346,19 +475,33 @@ func (w *walker) walk(node ast.Node, entering bool) (ast.WalkStatus, error) {
 
 	case *ast.Image:
 		if entering {
-			url := string(n.Destination)
-			mediaType := "external"
-			attrs := map[string]any{
-				"type": mediaType,
-				"url":  url,
+			if _, isLink := n.Parent().(*ast.Link); isLink {
+				url := string(n.Destination)
+				attrs := map[string]any{
+					"type": "external",
+					"url":  url,
+				}
+				if alt := imageAltText(n, w.source); alt != "" {
+					attrs["alt"] = alt
+				}
+				w.append(adf.Node{
+					Type:  "mediaInline",
+					Attrs: attrs,
+				})
+			} else {
+				url := string(n.Destination)
+				mediaAttrs := map[string]any{"type": "external", "url": url}
+				if alt := imageAltText(n, w.source); alt != "" {
+					mediaAttrs["alt"] = alt
+				}
+				w.append(adf.Node{
+					Type:  "mediaSingle",
+					Attrs: map[string]any{"layout": "center"},
+					Content: []adf.Node{
+						{Type: "media", Attrs: mediaAttrs},
+					},
+				})
 			}
-			w.append(adf.Node{
-				Type:  "mediaSingle",
-				Attrs: map[string]any{"layout": "center"},
-				Content: []adf.Node{
-					{Type: "media", Attrs: attrs},
-				},
-			})
 		}
 		return ast.WalkSkipChildren, nil
 
@@ -375,8 +518,59 @@ func (w *walker) walk(node ast.Node, entering bool) (ast.WalkStatus, error) {
 			}
 		}
 
+	// Phase 3: Emoji shortcodes → ADF emoji node.
+	case *emojast.Emoji:
+		if entering {
+			shortName := ":" + string(n.ShortName) + ":"
+			w.append(adf.Node{
+				Type: "emoji",
+				Attrs: map[string]any{
+					"shortName": shortName,
+					"text":      string(n.Value.Unicode),
+				},
+			})
+		}
+
+	// Phase 5: Superscript — emit subsup mark with type=sup.
+	case *SuperscriptNode:
+		if entering {
+			w.push()
+		} else {
+			content := w.pop()
+			for i := range content {
+				content[i].Marks = append(content[i].Marks, adf.Mark{
+					Type:  "subsup",
+					Attrs: map[string]any{"type": "sup"},
+				})
+			}
+			for _, c := range content {
+				w.append(c)
+			}
+		}
+
+	// Phase 4: Expand/Collapse — parse <details> HTML blocks.
 	case *ast.HTMLBlock:
-		// Skip HTML blocks — output warning if needed
+		if entering {
+			html := htmlBlockContent(n, w.source)
+			if title, body, ok := parseDetailsBlock(html); ok {
+				var content []adf.Node
+				if body != "" {
+					if bodyDoc, err := ConvertToADF([]byte(body)); err == nil {
+						content = bodyDoc.Content
+					}
+				}
+				attrs := map[string]any{}
+				if title != "" {
+					attrs["title"] = title
+				}
+				w.append(adf.Node{
+					Type:    "expand",
+					Attrs:   attrs,
+					Content: content,
+				})
+				return ast.WalkSkipChildren, nil
+			}
+		}
 		return ast.WalkSkipChildren, nil
 
 	case *ast.RawHTML:
@@ -386,3 +580,4 @@ func (w *walker) walk(node ast.Node, entering bool) (ast.WalkStatus, error) {
 
 	return ast.WalkContinue, nil
 }
+

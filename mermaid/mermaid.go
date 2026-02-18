@@ -12,6 +12,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
+	"time"
 )
 
 // EnsureAvailable checks that mmdc (mermaid-cli) is available on the PATH.
@@ -25,11 +27,18 @@ func EnsureAvailable() error {
 
 // Renderer renders Mermaid diagram source to SVG files using mmdc.
 type Renderer struct {
-	OutputDir string // directory where SVG files are written
+	OutputDir      string // directory where SVG files are written
+	puppeteerOnce  sync.Once
+	puppeteerError error
 }
+
+// Timeout is the maximum duration for a single mermaid render.
+// Defaults to 60 seconds if zero.
+const DefaultRenderTimeout = 60 * time.Second
 
 // Render takes Mermaid source, renders it to SVG, and returns the SVG file path.
 // The output filename is deterministic: mermaid-<sha256[:12]>.svg.
+// A 60-second timeout is applied to the mmdc subprocess.
 func (r *Renderer) Render(ctx context.Context, source []byte) (string, error) {
 	hash := fmt.Sprintf("%x", sha256.Sum256(source))[:12]
 	svgPath := filepath.Join(r.OutputDir, fmt.Sprintf("mermaid-%s.svg", hash))
@@ -46,18 +55,23 @@ func (r *Renderer) Render(ctx context.Context, source []byte) (string, error) {
 	}
 	defer os.Remove(inputPath)
 
-	// Write puppeteer config for --no-sandbox (required in Docker/CI).
+	// Write puppeteer config atomically (safe for parallel renders).
 	puppeteerCfg := filepath.Join(r.OutputDir, "puppeteer-config.json")
-	if _, err := os.Stat(puppeteerCfg); os.IsNotExist(err) {
+	r.puppeteerOnce.Do(func() {
 		cfg, _ := json.Marshal(map[string]any{
 			"args": []string{"--no-sandbox", "--disable-setuid-sandbox"},
 		})
-		if err := os.WriteFile(puppeteerCfg, cfg, 0644); err != nil {
-			return "", fmt.Errorf("writing puppeteer config: %w", err)
-		}
+		r.puppeteerError = os.WriteFile(puppeteerCfg, cfg, 0644)
+	})
+	if r.puppeteerError != nil {
+		return "", fmt.Errorf("writing puppeteer config: %w", r.puppeteerError)
 	}
 
-	cmd := exec.CommandContext(ctx, "mmdc",
+	// Apply timeout to the subprocess
+	renderCtx, cancel := context.WithTimeout(ctx, DefaultRenderTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(renderCtx, "mmdc",
 		"-i", inputPath,
 		"-o", svgPath,
 		"-e", "svg",
@@ -65,6 +79,9 @@ func (r *Renderer) Render(ctx context.Context, source []byte) (string, error) {
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		if renderCtx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("mermaid rendering timed out after %s", DefaultRenderTimeout)
+		}
 		return "", fmt.Errorf("mmdc failed: %w\nOutput: %s", err, output)
 	}
 

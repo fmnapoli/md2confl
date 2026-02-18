@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "type": "doc",
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Hello "
+        },
+        {
+          "type": "emoji",
+          "attrs": {
+            "shortName": ":wave:",
+            "text": "👋"
+          }
+        },
+        {
+          "type": "text",
+          "text": " world "
+        },
+        {
+          "type": "emoji",
+          "attrs": {
+            "shortName": ":tada:",
+            "text": "🎉"
+          }
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "attrs": {
+        "level": 2
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "Status "
+        },
+        {
+          "type": "emoji",
+          "attrs": {
+            "shortName": ":rocket:",
+            "text": "🚀"
+          }
+        }
+      ]
+    },
+    {
+      "type": "bulletList",
+      "content": [
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Item "
+                },
+                {
+                  "type": "emoji",
+                  "attrs": {
+                    "shortName": ":white_check_mark:",
+                    "text": "✅"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -42,6 +42,8 @@ func printResult(w io.Writer, r Result, jsonOutput bool) {
 		fmt.Fprintf(w, "  Page ID: %s\n", r.PageID)
 		fmt.Fprintf(w, "  Action: %s\n", r.Action)
 		fmt.Fprintf(w, "  Version: %d\n", r.Version)
+	case "skipped":
+		fmt.Fprintf(w, "- Skipped %q (unchanged)\n", r.Title)
 	case "converted":
 		fmt.Fprintf(w, "✓ Converted %s\n", r.Title)
 	}

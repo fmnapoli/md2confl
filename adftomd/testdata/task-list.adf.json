@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "type": "doc",
+  "content": [
+    {
+      "type": "taskList",
+      "content": [
+        {
+          "type": "taskItem",
+          "attrs": {"state": "TODO"},
+          "content": [{"type": "text", "text": "Buy milk"}]
+        },
+        {
+          "type": "taskItem",
+          "attrs": {"state": "DONE"},
+          "content": [{"type": "text", "text": "Write code"}]
+        }
+      ]
+    }
+  ]
+}

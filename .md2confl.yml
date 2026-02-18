@@ -1,0 +1,14 @@
+# .md2confl.yml
+url: https://fmnapoli.atlassian.net
+space: DDS
+email: fmnapoli@gmail.com
+force: true
+write-marker: true
+repo-url: https://github.com/fmnapoli/md2confl/blob/main/
+
+documents:
+  - input: README.md
+    title: "md2confl"
+
+  - input: docs/
+    parent-id: "589826"

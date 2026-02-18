@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAPIError_Error(t *testing.T) {
@@ -116,6 +117,7 @@ func TestHandleErrorResponse(t *testing.T) {
 				BaseURL: ts.URL, SpaceKey: "T", Email: "e@e.com", Token: "t",
 			})
 			client.httpClient = ts.Client()
+			client.initialDelay = time.Millisecond
 
 			_, err := client.ResolveSpaceID("T")
 			if err == nil {
