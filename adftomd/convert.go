@@ -17,9 +17,14 @@ import (
 // Options configures the ADF-to-Markdown conversion.
 type Options struct {
 	// ImageRewriter rewrites image URLs before emitting Markdown.
-	// Called for media and mediaInline nodes.
+	// Called for media and mediaInline nodes with external URLs.
 	// If nil, URLs are emitted as-is.
 	ImageRewriter func(url string) string
+
+	// FileIDResolver maps a Confluence media file ID (UUID) to a local path.
+	// Called for media nodes with type:"file" (attachment-based images).
+	// If nil, file-type media are skipped.
+	FileIDResolver func(fileID string) string
 }
 
 // Convert transforms an ADF Document into Markdown bytes.
@@ -373,8 +378,24 @@ func (c *converter) renderInline(node adf.Node) {
 			}
 		}
 		c.buf.WriteString(fmt.Sprintf("![%s](%s)", alt, url))
+	case "inlineExtension":
+		c.renderInlineExtension(node)
 	default:
 		// Inline unsupported nodes are silently ignored
+	}
+}
+
+func (c *converter) renderInlineExtension(node adf.Node) {
+	// Handle Confluence inline-external-image extensions (e.g. badges)
+	if params, ok := node.Attrs["parameters"]; ok {
+		if pm, ok := params.(map[string]interface{}); ok {
+			src, _ := pm["src"].(string)
+			alt, _ := pm["alt"].(string)
+			if src != "" {
+				fmt.Fprintf(&c.buf, "![%s](%s)", alt, src)
+				return
+			}
+		}
 	}
 }
 
@@ -442,6 +463,18 @@ func (c *converter) renderText(node adf.Node) {
 }
 
 func (c *converter) mediaURL(node adf.Node) string {
+	// Check for file-type media (Confluence attachments with UUID)
+	if mediaType, ok := node.Attrs["type"]; ok {
+		if s, ok := mediaType.(string); ok && s == "file" {
+			if id, ok := node.Attrs["id"]; ok {
+				if fileID, ok := id.(string); ok && c.opts.FileIDResolver != nil {
+					return c.opts.FileIDResolver(fileID)
+				}
+			}
+			return "" // file-type media without resolver
+		}
+	}
+
 	url := ""
 	if u, ok := node.Attrs["url"]; ok {
 		if s, ok := u.(string); ok {

@@ -621,6 +621,7 @@ func (c *Client) GetChildren(pageID string) ([]ChildPage, error) {
 // Attachment holds metadata for a page attachment.
 type Attachment struct {
 	ID           string
+	FileID       string // UUID used in ADF media nodes (type:"file")
 	Title        string // filename
 	MediaType    string
 	DownloadLink string // relative URL
@@ -630,6 +631,7 @@ type Attachment struct {
 type attachmentsResponse struct {
 	Results []struct {
 		ID           string `json:"id"`
+		FileID       string `json:"fileId"`
 		Title        string `json:"title"`
 		MediaType    string `json:"mediaType"`
 		DownloadLink string `json:"downloadLink"`
@@ -672,6 +674,7 @@ func (c *Client) GetAttachments(pageID string) ([]Attachment, error) {
 		for _, att := range result.Results {
 			attachments = append(attachments, Attachment{
 				ID:           att.ID,
+				FileID:       att.FileID,
 				Title:        att.Title,
 				MediaType:    att.MediaType,
 				DownloadLink: att.DownloadLink,
@@ -688,9 +691,17 @@ func (c *Client) GetAttachments(pageID string) ([]Attachment, error) {
 }
 
 // DownloadAttachment downloads an attachment by its relative download link.
+// The downloadLink from the v2 API is relative (e.g. "/download/attachments/..."),
+// and the actual endpoint lives under /wiki on Confluence Cloud.
 // Returns the raw bytes of the file content.
 func (c *Client) DownloadAttachment(downloadLink string) ([]byte, error) {
-	dlURL := strings.TrimRight(c.config.BaseURL, "/") + downloadLink
+	base := strings.TrimRight(c.config.BaseURL, "/")
+	// The v2 API returns download links without the /wiki prefix,
+	// but the actual download endpoint requires it.
+	if !strings.HasPrefix(downloadLink, "/wiki/") {
+		downloadLink = "/wiki" + downloadLink
+	}
+	dlURL := base + downloadLink
 	req, err := http.NewRequest("GET", dlURL, nil)
 	if err != nil {
 		return nil, err

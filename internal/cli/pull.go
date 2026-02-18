@@ -344,8 +344,15 @@ func (env *pullEnv) pullSinglePage(pageID, outputDir string) error {
 		return env.wrapConfluenceErr(err)
 	}
 
+	// Fetch attachments for file ID resolution before converting
+	var atts []confluence.Attachment
+	var fileIDMap map[string]string
+	if !env.skipAttachments {
+		atts, fileIDMap = env.fetchAttachments(pageID)
+	}
+
 	adfJSON := page.Body.AtlasDocFormat.Value
-	md := env.convertPageToMarkdown(pageID, page.Title, adfJSON, outputDir)
+	md := env.convertPageToMarkdown(pageID, page.Title, adfJSON, fileIDMap)
 
 	filename := sanitizeFilename(page.Title) + ".md"
 	filePath := filepath.Join(outputDir, filename)
@@ -370,9 +377,9 @@ func (env *pullEnv) pullSinglePage(pageID, outputDir string) error {
 		return fmt.Errorf("writing %s: %w", filePath, err)
 	}
 
-	// Download attachments
+	// Download attachment files
 	if !env.skipAttachments {
-		env.downloadAttachments(pageID, outputDir)
+		env.downloadAttachments(atts, outputDir)
 	}
 
 	if !env.jsonOutput {
@@ -388,23 +395,25 @@ func (env *pullEnv) pullSinglePage(pageID, outputDir string) error {
 }
 
 // convertPageToMarkdown converts an ADF page to Markdown with page-id marker and H1 title.
-func (env *pullEnv) convertPageToMarkdown(pageID, title, adfJSON, outputDir string) []byte {
+// fileIDMap maps Confluence file UUIDs to attachment filenames (for type:"file" media nodes).
+func (env *pullEnv) convertPageToMarkdown(pageID, title, adfJSON string, fileIDMap map[string]string) []byte {
 	var buf strings.Builder
 
 	// Page-id marker
 	fmt.Fprintf(&buf, "<!-- confluence-page-id: %s -->\n", pageID)
 
-	// H1 title
-	fmt.Fprintf(&buf, "# %s\n\n", title)
-
 	// Convert ADF body
 	if adfJSON != "" {
 		var doc adf.Document
 		if err := json.Unmarshal([]byte(adfJSON), &doc); err == nil {
+			// Check if ADF body starts with an H1 matching the page title
+			if !adfStartsWithTitle(&doc, title) {
+				fmt.Fprintf(&buf, "# %s\n\n", title)
+			}
+
 			opts := adftomd.Options{}
 			if !env.skipAttachments {
 				opts.ImageRewriter = func(url string) string {
-					// Rewrite attachment URLs to local relative paths
 					parts := strings.Split(url, "/")
 					if len(parts) > 0 {
 						return "attachments/" + parts[len(parts)-1]
@@ -412,12 +421,57 @@ func (env *pullEnv) convertPageToMarkdown(pageID, title, adfJSON, outputDir stri
 					return url
 				}
 			}
+			if len(fileIDMap) > 0 {
+				opts.FileIDResolver = func(fileID string) string {
+					if filename, ok := fileIDMap[fileID]; ok {
+						return "attachments/" + filename
+					}
+					return ""
+				}
+			}
 			body := adftomd.ConvertWithOptions(&doc, opts)
 			buf.Write(body)
+		} else {
+			// Failed to parse ADF — still prepend title
+			fmt.Fprintf(&buf, "# %s\n\n", title)
 		}
+	} else {
+		fmt.Fprintf(&buf, "# %s\n\n", title)
 	}
 
 	return []byte(buf.String())
+}
+
+// adfStartsWithTitle checks if the ADF document starts with an H1 heading
+// whose text matches the page title.
+func adfStartsWithTitle(doc *adf.Document, title string) bool {
+	if len(doc.Content) == 0 {
+		return false
+	}
+	first := doc.Content[0]
+	if first.Type != "heading" {
+		return false
+	}
+	if level, ok := first.Attrs["level"]; ok {
+		var l int
+		switch v := level.(type) {
+		case float64:
+			l = int(v)
+		case int:
+			l = v
+		}
+		if l != 1 {
+			return false
+		}
+	}
+	// Extract plain text from the heading
+	var text strings.Builder
+	for _, child := range first.Content {
+		if child.Type == "text" {
+			text.WriteString(child.Text)
+		}
+	}
+	return text.String() == title
 }
 
 // pullRecursive builds a page tree and writes it as a directory tree.
@@ -465,14 +519,21 @@ func (env *pullEnv) buildPageTree(pageID string, currentDepth, maxDepth int) (*p
 func (env *pullEnv) writePageTree(node *pageNode, outputDir string) error {
 	hasChildren := len(node.children) > 0
 
+	// Fetch attachments for file ID resolution
+	var atts []confluence.Attachment
+	var fileIDMap map[string]string
+	if !env.skipAttachments {
+		atts, fileIDMap = env.fetchAttachments(node.id)
+	}
+
 	if hasChildren {
 		// Page with children → directory with README.md
 		dirName := sanitizeFilename(node.title)
 		dirPath := filepath.Join(outputDir, dirName)
+		md := env.convertPageToMarkdown(node.id, node.title, node.adfBody, fileIDMap)
 
 		if env.dryRun {
 			filePath := filepath.Join(dirPath, "README.md")
-			md := env.convertPageToMarkdown(node.id, node.title, node.adfBody, dirPath)
 			if !env.jsonOutput {
 				fmt.Fprintf(env.stdout, "Would write: %s (%s, %d bytes)\n", filePath, node.title, len(md))
 			}
@@ -487,13 +548,12 @@ func (env *pullEnv) writePageTree(node *pageNode, outputDir string) error {
 			if err := os.MkdirAll(dirPath, 0755); err != nil {
 				return fmt.Errorf("creating directory %s: %w", dirPath, err)
 			}
-			md := env.convertPageToMarkdown(node.id, node.title, node.adfBody, dirPath)
 			filePath := filepath.Join(dirPath, "README.md")
 			if err := os.WriteFile(filePath, md, 0644); err != nil {
 				return fmt.Errorf("writing %s: %w", filePath, err)
 			}
 			if !env.skipAttachments {
-				env.downloadAttachments(node.id, dirPath)
+				env.downloadAttachments(atts, dirPath)
 			}
 			if !env.jsonOutput {
 				fmt.Fprintf(env.stdout, "Pulled: %q → %s\n", node.title, filePath)
@@ -517,7 +577,7 @@ func (env *pullEnv) writePageTree(node *pageNode, outputDir string) error {
 		// Leaf page → {sanitized-title}.md
 		filename := sanitizeFilename(node.title) + ".md"
 		filePath := filepath.Join(outputDir, filename)
-		md := env.convertPageToMarkdown(node.id, node.title, node.adfBody, outputDir)
+		md := env.convertPageToMarkdown(node.id, node.title, node.adfBody, fileIDMap)
 
 		if env.dryRun {
 			if !env.jsonOutput {
@@ -537,7 +597,7 @@ func (env *pullEnv) writePageTree(node *pageNode, outputDir string) error {
 				return fmt.Errorf("writing %s: %w", filePath, err)
 			}
 			if !env.skipAttachments {
-				env.downloadAttachments(node.id, outputDir)
+				env.downloadAttachments(atts, outputDir)
 			}
 			if !env.jsonOutput {
 				fmt.Fprintf(env.stdout, "Pulled: %q → %s\n", node.title, filePath)
@@ -554,14 +614,24 @@ func (env *pullEnv) writePageTree(node *pageNode, outputDir string) error {
 	return nil
 }
 
-// downloadAttachments fetches image attachments for a page and saves them locally.
-func (env *pullEnv) downloadAttachments(pageID, outputDir string) {
+// fetchAttachments returns the attachment list and builds a fileID→filename map.
+func (env *pullEnv) fetchAttachments(pageID string) ([]confluence.Attachment, map[string]string) {
 	atts, err := env.client.GetAttachments(pageID)
 	if err != nil {
 		env.addWarning(fmt.Sprintf("failed to list attachments for page %s: %v", pageID, err))
-		return
+		return nil, nil
 	}
+	fileIDMap := make(map[string]string)
+	for _, att := range atts {
+		if att.FileID != "" {
+			fileIDMap[att.FileID] = att.Title
+		}
+	}
+	return atts, fileIDMap
+}
 
+// downloadAttachments fetches image attachments for a page and saves them locally.
+func (env *pullEnv) downloadAttachments(atts []confluence.Attachment, outputDir string) {
 	for _, att := range atts {
 		if !strings.HasPrefix(att.MediaType, "image/") {
 			continue
