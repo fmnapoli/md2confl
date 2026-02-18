@@ -68,6 +68,11 @@ type appEnv struct {
 // Run parses CLI arguments and executes the requested operation.
 // Returns an exit code: 0 for success, 1 for user error, 2 for API error.
 func Run(args []string, version string, stdout, stderr io.Writer) int {
+	// Detect "pull" subcommand and delegate
+	if len(args) > 0 && args[0] == "pull" {
+		return runPullCommand(args[1:], version, stdout, stderr)
+	}
+
 	warnings := make([]string, 0)
 	outputMu := &sync.Mutex{}
 	app := &appEnv{
