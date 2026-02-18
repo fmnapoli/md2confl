@@ -83,17 +83,17 @@
 
 ### Tests for US1
 
-- [ ] T025 [P] [US1] Write unit tests in `internal/cli/pull_test.go` for single-page pull: mock `GetPage()`, verify output file contains `<!-- confluence-page-id: ... -->` marker, H1 title, converted body, and correct sanitized filename
-- [ ] T026 [P] [US1] Write unit tests in `internal/cli/pull_test.go` for `--dry-run` mode: verify no files are written and stdout shows preview output
-- [ ] T027 [P] [US1] Write unit tests in `internal/cli/pull_test.go` for error cases: invalid page ID (404), auth failure, empty page body
+- [x] T025 [P] [US1] Write unit tests in `internal/cli/pull_test.go` for single-page pull: mock `GetPage()`, verify output file contains `<!-- confluence-page-id: ... -->` marker, H1 title, converted body, and correct sanitized filename
+- [x] T026 [P] [US1] Write unit tests in `internal/cli/pull_test.go` for `--dry-run` mode: verify no files are written and stdout shows preview output
+- [x] T027 [P] [US1] Write unit tests in `internal/cli/pull_test.go` for error cases: invalid page ID (404), auth failure, empty page body
 
 ### Implementation for US1
 
-- [ ] T028 [US1] Implement `runPull()` in `internal/cli/pull.go` — parse pull-specific flags (`--page-id`, `--output-dir`, `--dry-run`, `--verbose`), merge with `PullConfig`, validate inputs
-- [ ] T029 [US1] Implement single-page pull logic in `internal/cli/pull.go` — call `client.GetPage(pageID)`, parse ADF body, call `adftomd.Convert()`, prepend page-id marker and H1 title, write to `{output-dir}/{sanitized-title}.md`
-- [ ] T030 [US1] Implement `--dry-run` for single-page pull in `internal/cli/pull.go` — print file path, title, and byte count without creating files
-- [ ] T031 [US1] Implement text output for single-page pull per `contracts/pull-cli.md` — `Pulled: "Title" → path` on success, actionable error messages on failure
-- [ ] T032 [US1] Wire exit codes per `contracts/pull-cli.md`: 0 = success, 1 = user error (bad flags), 2 = API error (auth, not found)
+- [x] T028 [US1] Implement `runPull()` in `internal/cli/pull.go` — parse pull-specific flags (`--page-id`, `--output-dir`, `--dry-run`, `--verbose`), merge with `PullConfig`, validate inputs
+- [x] T029 [US1] Implement single-page pull logic in `internal/cli/pull.go` — call `client.GetPage(pageID)`, parse ADF body, call `adftomd.Convert()`, prepend page-id marker and H1 title, write to `{output-dir}/{sanitized-title}.md`
+- [x] T030 [US1] Implement `--dry-run` for single-page pull in `internal/cli/pull.go` — print file path, title, and byte count without creating files
+- [x] T031 [US1] Implement text output for single-page pull per `contracts/pull-cli.md` — `Pulled: "Title" → path` on success, actionable error messages on failure
+- [x] T032 [US1] Wire exit codes per `contracts/pull-cli.md`: 0 = success, 1 = user error (bad flags), 2 = API error (auth, not found)
 
 **Checkpoint**: Single page pull by ID works end-to-end. Run `go test ./internal/cli/... -run TestPull`.
 
@@ -107,13 +107,13 @@
 
 ### Tests for US2
 
-- [ ] T033 [P] [US2] Write unit tests in `internal/cli/pull_test.go` for title-based pull: mock `FindByTitle()` → page ID, then mock `GetPage()`, verify correct file output
-- [ ] T034 [P] [US2] Write unit tests in `internal/cli/pull_test.go` for title errors: title not found, missing `--space` flag
+- [x] T033 [P] [US2] Write unit tests in `internal/cli/pull_test.go` for title-based pull: mock `FindByTitle()` → page ID, then mock `GetPage()`, verify correct file output
+- [x] T034 [P] [US2] Write unit tests in `internal/cli/pull_test.go` for title errors: title not found, missing `--space` flag
 
 ### Implementation for US2
 
-- [ ] T035 [US2] Add `--title` and `--space` flag handling in `internal/cli/pull.go` — validate mutual exclusivity with `--page-id`, require `--space` when `--title` is set
-- [ ] T036 [US2] Implement title-based lookup in `internal/cli/pull.go` — call `client.FindByTitle(spaceID, title)` to get page ID, then reuse single-page pull logic from US1 (per research.md R-008)
+- [x] T035 [US2] Add `--title` and `--space` flag handling in `internal/cli/pull.go` — validate mutual exclusivity with `--page-id`, require `--space` when `--title` is set
+- [x] T036 [US2] Implement title-based lookup in `internal/cli/pull.go` — call `client.FindByTitle(spaceID, title)` to get page ID, then reuse single-page pull logic from US1 (per research.md R-008)
 
 **Checkpoint**: Title-based pull works. Run `go test ./internal/cli/... -run TestPullByTitle`.
 
@@ -127,17 +127,17 @@
 
 ### Tests for US3
 
-- [ ] T037 [P] [US3] Write unit tests in `internal/cli/pull_test.go` for recursive pull: mock page tree (parent + 3 children + 2 grandchildren), verify directory structure per research.md R-007 (README.md for parents, `{title}.md` for leaves, subdirectories for nested)
-- [ ] T038 [P] [US3] Write unit tests in `internal/cli/pull_test.go` for `--depth` limit: mock deep tree, verify traversal stops at limit and warning is emitted
-- [ ] T039 [P] [US3] Write unit test in `internal/cli/pull_test.go` for `--dry-run --recursive`: verify full tree is printed without creating files/directories
+- [x] T037 [P] [US3] Write unit tests in `internal/cli/pull_test.go` for recursive pull: mock page tree (parent + 3 children + 2 grandchildren), verify directory structure per research.md R-007 (README.md for parents, `{title}.md` for leaves, subdirectories for nested)
+- [x] T038 [P] [US3] Write unit tests in `internal/cli/pull_test.go` for `--depth` limit: mock deep tree, verify traversal stops at limit and warning is emitted
+- [x] T039 [P] [US3] Write unit test in `internal/cli/pull_test.go` for `--dry-run --recursive`: verify full tree is printed without creating files/directories
 
 ### Implementation for US3
 
-- [ ] T040 [US3] Implement `pageNode` tree builder in `internal/cli/pull.go` — recursive fetch using `client.GetChildren()` + `client.GetPage()` per page, respecting `--depth` limit (default 10, max 100)
-- [ ] T041 [US3] Implement tree-to-filesystem writer in `internal/cli/pull.go` — walk `pageNode` tree, create directories for pages with children (parent content → `README.md`), write leaf pages as `{sanitized-title}.md`
-- [ ] T042 [US3] Implement `--dry-run` for recursive pull — print full tree structure (`Would write: ...`) without creating files/directories
-- [ ] T043 [US3] Implement depth-limit warning — when traversal is truncated, emit warning listing the branches that were not fully traversed
-- [ ] T044 [US3] Handle API pagination in recursive fetch — `GetChildren()` already paginates, but ensure parent pages with >50 children are fully traversed
+- [x] T040 [US3] Implement `pageNode` tree builder in `internal/cli/pull.go` — recursive fetch using `client.GetChildren()` + `client.GetPage()` per page, respecting `--depth` limit (default 10, max 100)
+- [x] T041 [US3] Implement tree-to-filesystem writer in `internal/cli/pull.go` — walk `pageNode` tree, create directories for pages with children (parent content → `README.md`), write leaf pages as `{sanitized-title}.md`
+- [x] T042 [US3] Implement `--dry-run` for recursive pull — print full tree structure (`Would write: ...`) without creating files/directories
+- [x] T043 [US3] Implement depth-limit warning — when traversal is truncated, emit warning listing the branches that were not fully traversed
+- [x] T044 [US3] Handle API pagination in recursive fetch — `GetChildren()` already paginates, but ensure parent pages with >50 children are fully traversed
 
 **Checkpoint**: Recursive pull produces correct directory tree. Run `go test ./internal/cli/... -run TestPullRecursive`.
 
@@ -151,16 +151,16 @@
 
 ### Tests for US5
 
-- [ ] T045 [P] [US5] Write unit tests in `internal/cli/pull_test.go` for attachment download: mock `GetAttachments()` + `DownloadAttachment()`, verify files saved to `{output-dir}/attachments/`, Markdown image refs updated to relative paths
-- [ ] T046 [P] [US5] Write unit tests in `internal/cli/pull_test.go` for `--skip-attachments`: verify no downloads, image refs remain as Confluence URLs
-- [ ] T047 [P] [US5] Write unit test in `internal/cli/pull_test.go` for attachment download failure: verify warning emitted and image ref falls back to Confluence URL
+- [x] T045 [P] [US5] Write unit tests in `internal/cli/pull_test.go` for attachment download: mock `GetAttachments()` + `DownloadAttachment()`, verify files saved to `{output-dir}/attachments/`, Markdown image refs updated to relative paths
+- [x] T046 [P] [US5] Write unit tests in `internal/cli/pull_test.go` for `--skip-attachments`: verify no downloads, image refs remain as Confluence URLs
+- [x] T047 [P] [US5] Write unit test in `internal/cli/pull_test.go` for attachment download failure: verify warning emitted and image ref falls back to Confluence URL
 
 ### Implementation for US5
 
-- [ ] T048 [US5] Implement attachment download logic in `internal/cli/pull.go` — after converting ADF, call `GetAttachments(pageID)`, download each image attachment, save to `{output-dir}/attachments/{filename}`
-- [ ] T049 [US5] Implement `ImageRewriter` callback for `ConvertWithOptions()` in `internal/cli/pull.go` — rewrite Confluence attachment URLs to relative `attachments/{filename}` paths
-- [ ] T050 [US5] Implement `--skip-attachments` flag — when set, skip download and leave image URLs as-is (pass nil `ImageRewriter`)
-- [ ] T051 [US5] Handle attachment download errors gracefully — emit warning, fall back to Confluence URL for that image
+- [x] T048 [US5] Implement attachment download logic in `internal/cli/pull.go` — after converting ADF, call `GetAttachments(pageID)`, download each image attachment, save to `{output-dir}/attachments/{filename}`
+- [x] T049 [US5] Implement `ImageRewriter` callback for `ConvertWithOptions()` in `internal/cli/pull.go` — rewrite Confluence attachment URLs to relative `attachments/{filename}` paths
+- [x] T050 [US5] Implement `--skip-attachments` flag — when set, skip download and leave image URLs as-is (pass nil `ImageRewriter`)
+- [x] T051 [US5] Handle attachment download errors gracefully — emit warning, fall back to Confluence URL for that image
 
 **Checkpoint**: Attachments download and Markdown refs update correctly. Run `go test ./internal/cli/... -run TestPullAttachment`.
 
@@ -174,14 +174,14 @@
 
 ### Tests for US6
 
-- [ ] T052 [P] [US6] Write unit tests in `internal/cli/pull_test.go` for `--json` output: verify success JSON contains `status`, `pages[]` with `pageId`/`title`/`filePath`/`action`/`children`, `attachments` count
-- [ ] T053 [P] [US6] Write unit test in `internal/cli/pull_test.go` for `--json` error output: verify error JSON contains `status`, `code`, `message`, `hint`
+- [x] T052 [P] [US6] Write unit tests in `internal/cli/pull_test.go` for `--json` output: verify success JSON contains `status`, `pages[]` with `pageId`/`title`/`filePath`/`action`/`children`, `attachments` count
+- [x] T053 [P] [US6] Write unit test in `internal/cli/pull_test.go` for `--json` error output: verify error JSON contains `status`, `code`, `message`, `hint`
 
 ### Implementation for US6
 
-- [ ] T054 [US6] Define `PullResult` and `PullOutput` JSON structs in `internal/cli/pull.go` per data-model.md and `contracts/pull-cli.md`
-- [ ] T055 [US6] Implement `--json` flag in `internal/cli/pull.go` — collect `PullResult` per page during pull, marshal to JSON on completion (success or error)
-- [ ] T056 [US6] Ensure JSON error output uses structured format with `status: "error"`, `code`, `message`, and `hint` fields per contract
+- [x] T054 [US6] Define `PullResult` and `PullOutput` JSON structs in `internal/cli/pull.go` per data-model.md and `contracts/pull-cli.md`
+- [x] T055 [US6] Implement `--json` flag in `internal/cli/pull.go` — collect `PullResult` per page during pull, marshal to JSON on completion (success or error)
+- [x] T056 [US6] Ensure JSON error output uses structured format with `status: "error"`, `code`, `message`, and `hint` fields per contract
 
 **Checkpoint**: JSON output works for both success and error. Run `go test ./internal/cli/... -run TestPullJSON`.
 
@@ -191,9 +191,9 @@
 
 **Purpose**: Integration testing, docker-compose, config file support, edge cases.
 
-- [ ] T057 Implement config-file-based pull in `internal/cli/pull.go` — when `--config` is specified (or `.confl2md.yml` auto-detected), iterate `pages[]` entries and pull each
+- [x] T057 Implement config-file-based pull in `internal/cli/pull.go` — when `--config` is specified (or `.confl2md.yml` auto-detected), iterate `pages[]` entries and pull each
 - [ ] T058 [P] Add docker-compose services (`pull-page`, `pull-docs`, `pull-dry-run`) in `docker-compose.yml` per plan.md integration testing section
-- [ ] T059 [P] Add edge-case handling in `internal/cli/pull.go`: overwrite existing files, empty page body (write page-id + H1 only), paginated child pages
+- [x] T059 [P] Add edge-case handling in `internal/cli/pull.go`: overwrite existing files, empty page body (write page-id + H1 only), paginated child pages
 - [ ] T060 Run `go test ./...` and fix any failures across all packages
 - [ ] T061 Run `go vet ./...` and `golangci-lint run` — fix any warnings
 - [ ] T062 Validate quickstart.md scenarios manually or via docker-compose integration tests

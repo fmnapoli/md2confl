@@ -4,18 +4,65 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"unicode"
 
+	"github.com/fmnapoli/md2confl/adf"
+	"github.com/fmnapoli/md2confl/adftomd"
 	"github.com/fmnapoli/md2confl/confluence"
 )
+
+// pullClient abstracts the Confluence API methods needed by pull.
+type pullClient interface {
+	GetPage(pageID string) (*confluence.PageResponse, error)
+	FindByTitle(spaceID, title string) (*confluence.PageResponse, error)
+	ResolveSpaceID(spaceKey string) (string, error)
+	GetChildren(pageID string) ([]confluence.ChildPage, error)
+	GetAttachments(pageID string) ([]confluence.Attachment, error)
+	DownloadAttachment(downloadLink string) ([]byte, error)
+}
+
+// PullResult holds the outcome of pulling a single page.
+type PullResult struct {
+	PageID   string `json:"pageId"`
+	Title    string `json:"title"`
+	FilePath string `json:"filePath"`
+	Action   string `json:"action"`   // "written", "skipped" (dry-run)
+	Children int    `json:"children"` // count of child pages pulled (recursive only)
+}
+
+// PullOutput is the top-level JSON output for pull.
+type PullOutput struct {
+	Status      string       `json:"status"`
+	Pages       []PullResult `json:"pages,omitempty"`
+	Attachments int          `json:"attachments,omitempty"`
+	Warnings    []string     `json:"warnings,omitempty"`
+}
+
+// PullErrorOutput is the JSON error output.
+type PullErrorOutput struct {
+	Status  string `json:"status"`
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Hint    string `json:"hint,omitempty"`
+}
+
+// pageNode is an internal tree structure for recursive pull.
+type pageNode struct {
+	id       string
+	title    string
+	adfBody  string
+	children []*pageNode
+}
 
 // pullEnv holds the pull subcommand state.
 type pullEnv struct {
@@ -37,11 +84,16 @@ type pullEnv struct {
 
 	config *PullConfig
 
-	version  string
-	stdout   io.Writer
-	stderr   io.Writer
-	logger   *slog.Logger
-	warnings []string
+	// client is set during run(); tests inject a mock here.
+	client pullClient
+
+	version     string
+	stdout      io.Writer
+	stderr      io.Writer
+	logger      *slog.Logger
+	warnings    []string
+	results     []PullResult
+	attachCount int
 }
 
 // runPullCommand is the entry point for the "pull" subcommand.
@@ -72,12 +124,48 @@ func runPullCommand(args []string, version string, stdout, stderr io.Writer) int
 		var ae *apiError
 		if errors.As(err, &ae) {
 			code = ae.exitCode
-			printError(stderr, ae.Error(), ae.hint, code, env.jsonOutput)
+			if env.jsonOutput {
+				enc := json.NewEncoder(stdout)
+				enc.SetIndent("", "  ")
+				enc.Encode(PullErrorOutput{
+					Status:  "error",
+					Code:    code,
+					Message: ae.Error(),
+					Hint:    ae.hint,
+				})
+			} else {
+				printError(stderr, ae.Error(), ae.hint, code, false)
+			}
 		} else {
-			printError(stderr, err.Error(), "", code, env.jsonOutput)
+			if env.jsonOutput {
+				enc := json.NewEncoder(stdout)
+				enc.SetIndent("", "  ")
+				enc.Encode(PullErrorOutput{
+					Status:  "error",
+					Code:    code,
+					Message: err.Error(),
+				})
+			} else {
+				printError(stderr, err.Error(), "", code, false)
+			}
 		}
+		env.printWarnings()
 		return code
 	}
+
+	// Print JSON output on success
+	if env.jsonOutput {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		enc.Encode(PullOutput{
+			Status:      "success",
+			Pages:       env.results,
+			Attachments: env.attachCount,
+			Warnings:    env.warnings,
+		})
+	}
+
+	env.printWarnings()
 	return 0
 }
 
@@ -202,7 +290,345 @@ func (env *pullEnv) validateFlags() error {
 }
 
 func (env *pullEnv) run() error {
-	return fmt.Errorf("pull command not yet implemented")
+	// Create real API client if not injected (tests inject mocks)
+	if env.client == nil {
+		client, err := confluence.NewClient(confluence.Config{
+			BaseURL:  env.url,
+			SpaceKey: env.space,
+			Email:    env.email,
+			Token:    env.token,
+		})
+		if err != nil {
+			return &apiError{message: err.Error(), exitCode: 1}
+		}
+		client.SetLogger(env.logger)
+		env.client = client
+	}
+
+	// Config-based pull: iterate pages[]
+	if env.config != nil && len(env.config.Pages) > 0 && env.pageID == "" && env.title == "" {
+		return env.runConfigPages()
+	}
+
+	// Resolve page ID from title if needed
+	pageID := env.pageID
+	if env.title != "" {
+		spaceID, err := env.client.ResolveSpaceID(env.space)
+		if err != nil {
+			return env.wrapConfluenceErr(err)
+		}
+		page, err := env.client.FindByTitle(spaceID, env.title)
+		if err != nil {
+			return env.wrapConfluenceErr(err)
+		}
+		if page == nil {
+			return &apiError{
+				message:  fmt.Sprintf("page not found: %q in space %s", env.title, env.space),
+				hint:     "verify the page title and space key are correct",
+				exitCode: 2,
+			}
+		}
+		pageID = page.ID
+	}
+
+	if env.recursive {
+		return env.pullRecursive(pageID, env.outputDir, env.depth)
+	}
+	return env.pullSinglePage(pageID, env.outputDir)
+}
+
+// pullSinglePage fetches a page by ID and writes it as Markdown.
+func (env *pullEnv) pullSinglePage(pageID, outputDir string) error {
+	page, err := env.client.GetPage(pageID)
+	if err != nil {
+		return env.wrapConfluenceErr(err)
+	}
+
+	adfJSON := page.Body.AtlasDocFormat.Value
+	md := env.convertPageToMarkdown(pageID, page.Title, adfJSON, outputDir)
+
+	filename := sanitizeFilename(page.Title) + ".md"
+	filePath := filepath.Join(outputDir, filename)
+
+	if env.dryRun {
+		if !env.jsonOutput {
+			fmt.Fprintf(env.stdout, "Would write: %s (%s, %d bytes)\n", filePath, page.Title, len(md))
+		}
+		env.results = append(env.results, PullResult{
+			PageID:   pageID,
+			Title:    page.Title,
+			FilePath: filePath,
+			Action:   "skipped",
+		})
+		return nil
+	}
+
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		return fmt.Errorf("creating output directory: %w", err)
+	}
+	if err := os.WriteFile(filePath, md, 0644); err != nil {
+		return fmt.Errorf("writing %s: %w", filePath, err)
+	}
+
+	// Download attachments
+	if !env.skipAttachments {
+		env.downloadAttachments(pageID, outputDir)
+	}
+
+	if !env.jsonOutput {
+		fmt.Fprintf(env.stdout, "Pulled: %q → %s\n", page.Title, filePath)
+	}
+	env.results = append(env.results, PullResult{
+		PageID:   pageID,
+		Title:    page.Title,
+		FilePath: filePath,
+		Action:   "written",
+	})
+	return nil
+}
+
+// convertPageToMarkdown converts an ADF page to Markdown with page-id marker and H1 title.
+func (env *pullEnv) convertPageToMarkdown(pageID, title, adfJSON, outputDir string) []byte {
+	var buf strings.Builder
+
+	// Page-id marker
+	fmt.Fprintf(&buf, "<!-- confluence-page-id: %s -->\n", pageID)
+
+	// H1 title
+	fmt.Fprintf(&buf, "# %s\n\n", title)
+
+	// Convert ADF body
+	if adfJSON != "" {
+		var doc adf.Document
+		if err := json.Unmarshal([]byte(adfJSON), &doc); err == nil {
+			opts := adftomd.Options{}
+			if !env.skipAttachments {
+				opts.ImageRewriter = func(url string) string {
+					// Rewrite attachment URLs to local relative paths
+					parts := strings.Split(url, "/")
+					if len(parts) > 0 {
+						return "attachments/" + parts[len(parts)-1]
+					}
+					return url
+				}
+			}
+			body := adftomd.ConvertWithOptions(&doc, opts)
+			buf.Write(body)
+		}
+	}
+
+	return []byte(buf.String())
+}
+
+// pullRecursive builds a page tree and writes it as a directory tree.
+func (env *pullEnv) pullRecursive(pageID, outputDir string, maxDepth int) error {
+	root, err := env.buildPageTree(pageID, 0, maxDepth)
+	if err != nil {
+		return err
+	}
+	return env.writePageTree(root, outputDir)
+}
+
+func (env *pullEnv) buildPageTree(pageID string, currentDepth, maxDepth int) (*pageNode, error) {
+	page, err := env.client.GetPage(pageID)
+	if err != nil {
+		return nil, env.wrapConfluenceErr(err)
+	}
+
+	node := &pageNode{
+		id:      pageID,
+		title:   page.Title,
+		adfBody: page.Body.AtlasDocFormat.Value,
+	}
+
+	if currentDepth >= maxDepth {
+		env.addWarning(fmt.Sprintf("depth limit reached at %q (depth %d)", page.Title, currentDepth))
+		return node, nil
+	}
+
+	children, err := env.client.GetChildren(pageID)
+	if err != nil {
+		return nil, env.wrapConfluenceErr(err)
+	}
+
+	for _, child := range children {
+		childNode, err := env.buildPageTree(child.ID, currentDepth+1, maxDepth)
+		if err != nil {
+			return nil, err
+		}
+		node.children = append(node.children, childNode)
+	}
+
+	return node, nil
+}
+
+func (env *pullEnv) writePageTree(node *pageNode, outputDir string) error {
+	hasChildren := len(node.children) > 0
+
+	if hasChildren {
+		// Page with children → directory with README.md
+		dirName := sanitizeFilename(node.title)
+		dirPath := filepath.Join(outputDir, dirName)
+
+		if env.dryRun {
+			filePath := filepath.Join(dirPath, "README.md")
+			md := env.convertPageToMarkdown(node.id, node.title, node.adfBody, dirPath)
+			if !env.jsonOutput {
+				fmt.Fprintf(env.stdout, "Would write: %s (%s, %d bytes)\n", filePath, node.title, len(md))
+			}
+			env.results = append(env.results, PullResult{
+				PageID:   node.id,
+				Title:    node.title,
+				FilePath: filePath,
+				Action:   "skipped",
+				Children: len(node.children),
+			})
+		} else {
+			if err := os.MkdirAll(dirPath, 0755); err != nil {
+				return fmt.Errorf("creating directory %s: %w", dirPath, err)
+			}
+			md := env.convertPageToMarkdown(node.id, node.title, node.adfBody, dirPath)
+			filePath := filepath.Join(dirPath, "README.md")
+			if err := os.WriteFile(filePath, md, 0644); err != nil {
+				return fmt.Errorf("writing %s: %w", filePath, err)
+			}
+			if !env.skipAttachments {
+				env.downloadAttachments(node.id, dirPath)
+			}
+			if !env.jsonOutput {
+				fmt.Fprintf(env.stdout, "Pulled: %q → %s\n", node.title, filePath)
+			}
+			env.results = append(env.results, PullResult{
+				PageID:   node.id,
+				Title:    node.title,
+				FilePath: filePath,
+				Action:   "written",
+				Children: len(node.children),
+			})
+		}
+
+		// Write children
+		for _, child := range node.children {
+			if err := env.writePageTree(child, dirPath); err != nil {
+				return err
+			}
+		}
+	} else {
+		// Leaf page → {sanitized-title}.md
+		filename := sanitizeFilename(node.title) + ".md"
+		filePath := filepath.Join(outputDir, filename)
+		md := env.convertPageToMarkdown(node.id, node.title, node.adfBody, outputDir)
+
+		if env.dryRun {
+			if !env.jsonOutput {
+				fmt.Fprintf(env.stdout, "Would write: %s (%s, %d bytes)\n", filePath, node.title, len(md))
+			}
+			env.results = append(env.results, PullResult{
+				PageID:   node.id,
+				Title:    node.title,
+				FilePath: filePath,
+				Action:   "skipped",
+			})
+		} else {
+			if err := os.MkdirAll(outputDir, 0755); err != nil {
+				return fmt.Errorf("creating directory %s: %w", outputDir, err)
+			}
+			if err := os.WriteFile(filePath, md, 0644); err != nil {
+				return fmt.Errorf("writing %s: %w", filePath, err)
+			}
+			if !env.skipAttachments {
+				env.downloadAttachments(node.id, outputDir)
+			}
+			if !env.jsonOutput {
+				fmt.Fprintf(env.stdout, "Pulled: %q → %s\n", node.title, filePath)
+			}
+			env.results = append(env.results, PullResult{
+				PageID:   node.id,
+				Title:    node.title,
+				FilePath: filePath,
+				Action:   "written",
+			})
+		}
+	}
+
+	return nil
+}
+
+// downloadAttachments fetches image attachments for a page and saves them locally.
+func (env *pullEnv) downloadAttachments(pageID, outputDir string) {
+	atts, err := env.client.GetAttachments(pageID)
+	if err != nil {
+		env.addWarning(fmt.Sprintf("failed to list attachments for page %s: %v", pageID, err))
+		return
+	}
+
+	for _, att := range atts {
+		if !strings.HasPrefix(att.MediaType, "image/") {
+			continue
+		}
+		data, err := env.client.DownloadAttachment(att.DownloadLink)
+		if err != nil {
+			env.addWarning(fmt.Sprintf("failed to download %s: %v", att.Title, err))
+			continue
+		}
+		attDir := filepath.Join(outputDir, "attachments")
+		if err := os.MkdirAll(attDir, 0755); err != nil {
+			env.addWarning(fmt.Sprintf("failed to create attachments dir: %v", err))
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(attDir, att.Title), data, 0644); err != nil {
+			env.addWarning(fmt.Sprintf("failed to save %s: %v", att.Title, err))
+			continue
+		}
+		env.attachCount++
+	}
+}
+
+// runConfigPages iterates over pages[] in the config file.
+func (env *pullEnv) runConfigPages() error {
+	for _, page := range env.config.Pages {
+		pageID := page.PageID
+		outputDir := page.OutputDir
+		if outputDir == "" {
+			outputDir = "."
+		}
+
+		if page.Title != "" {
+			spaceID, err := env.client.ResolveSpaceID(env.space)
+			if err != nil {
+				return env.wrapConfluenceErr(err)
+			}
+			found, err := env.client.FindByTitle(spaceID, page.Title)
+			if err != nil {
+				return env.wrapConfluenceErr(err)
+			}
+			if found == nil {
+				env.addWarning(fmt.Sprintf("page not found: %q", page.Title))
+				continue
+			}
+			pageID = found.ID
+		}
+
+		depth := page.Depth
+		if depth == 0 {
+			depth = 10
+		}
+
+		if page.Recursive {
+			if err := env.pullRecursive(pageID, outputDir, depth); err != nil {
+				return err
+			}
+		} else {
+			if err := env.pullSinglePage(pageID, outputDir); err != nil {
+				return err
+			}
+		}
+	}
+
+	if !env.jsonOutput {
+		fmt.Fprintf(env.stdout, "\n%d page(s) pulled successfully.\n", len(env.results))
+	}
+	return nil
 }
 
 func (env *pullEnv) addWarning(msg string) {
@@ -221,11 +647,9 @@ func (env *pullEnv) printWarnings() {
 
 // sanitizeFilename converts a page title to a valid, filesystem-safe filename.
 func sanitizeFilename(title string) string {
-	// Replace invalid filename characters with hyphen
 	invalid := regexp.MustCompile(`[/\\:*?"<>|]`)
 	result := invalid.ReplaceAllString(title, "-")
 
-	// Replace non-ASCII control characters and whitespace with hyphens
 	var buf strings.Builder
 	for _, r := range result {
 		if unicode.IsControl(r) || unicode.IsSpace(r) {
@@ -236,23 +660,18 @@ func sanitizeFilename(title string) string {
 	}
 	result = buf.String()
 
-	// Lowercase
 	result = strings.ToLower(result)
 
-	// Collapse consecutive hyphens
 	multi := regexp.MustCompile(`-{2,}`)
 	result = multi.ReplaceAllString(result, "-")
 
-	// Trim hyphens from edges
 	result = strings.Trim(result, "-")
 
-	// Truncate to 200 characters
 	if len(result) > 200 {
 		result = result[:200]
 		result = strings.TrimRight(result, "-")
 	}
 
-	// Fallback for empty result
 	if result == "" {
 		result = "untitled"
 	}

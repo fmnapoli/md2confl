@@ -235,8 +235,8 @@ func (c *Client) ResolveSpaceID(spaceKey string) (string, error) {
 	return result.Results[0].ID, nil
 }
 
-// pageResponse represents the API response for page operations.
-type pageResponse struct {
+// PageResponse represents the API response for page operations.
+type PageResponse struct {
 	ID       string `json:"id"`
 	ParentID string `json:"parentId"`
 	Title    string `json:"title"`
@@ -256,7 +256,7 @@ type pageResponse struct {
 
 // pagesResponse represents the API response for page list queries.
 type pagesResponse struct {
-	Results []pageResponse `json:"results"`
+	Results []PageResponse `json:"results"`
 }
 
 // CreatePage creates a new page in Confluence.
@@ -295,7 +295,7 @@ func (c *Client) CreatePage(spaceID, title, parentID, adfJSON string) (*PublishR
 		return nil, c.handleErrorResponse(resp)
 	}
 
-	var page pageResponse
+	var page PageResponse
 	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
 		return nil, fmt.Errorf("decoding page response: %w", err)
 	}
@@ -311,7 +311,7 @@ func (c *Client) CreatePage(spaceID, title, parentID, adfJSON string) (*PublishR
 }
 
 // GetPage retrieves a page by ID.
-func (c *Client) GetPage(pageID string) (*pageResponse, error) {
+func (c *Client) GetPage(pageID string) (*PageResponse, error) {
 	url := fmt.Sprintf("%s/pages/%s?body-format=atlas_doc_format", c.baseAPIURL, pageID)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -328,7 +328,7 @@ func (c *Client) GetPage(pageID string) (*pageResponse, error) {
 		return nil, c.handleErrorResponse(resp)
 	}
 
-	var page pageResponse
+	var page PageResponse
 	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
 		return nil, fmt.Errorf("decoding page response: %w", err)
 	}
@@ -372,7 +372,7 @@ func (c *Client) UpdatePage(pageID, title, adfJSON string, currentVersion int) (
 		return nil, c.handleErrorResponse(resp)
 	}
 
-	var page pageResponse
+	var page PageResponse
 	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
 		return nil, fmt.Errorf("decoding page response: %w", err)
 	}
@@ -388,7 +388,7 @@ func (c *Client) UpdatePage(pageID, title, adfJSON string, currentVersion int) (
 }
 
 // FindByTitle searches for a page by exact title in a space.
-func (c *Client) FindByTitle(spaceID, title string) (*pageResponse, error) {
+func (c *Client) FindByTitle(spaceID, title string) (*PageResponse, error) {
 	reqURL := fmt.Sprintf("%s/pages?space-id=%s&title=%s&status=current", c.baseAPIURL, spaceID, url.QueryEscape(title))
 	req, err := http.NewRequest("GET", reqURL, nil)
 	if err != nil {
