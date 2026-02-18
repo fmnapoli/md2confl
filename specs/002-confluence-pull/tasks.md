@@ -32,12 +32,12 @@
 
 **CRITICAL**: No user story work can begin until this phase is complete.
 
-- [ ] T005 Implement `GetChildren(pageID string) ([]ChildPage, error)` in `confluence/client.go` with cursor-based pagination per `contracts/confluence-client.md`
-- [ ] T006 [P] Implement `GetAttachments(pageID string) ([]Attachment, error)` in `confluence/client.go` with cursor-based pagination per `contracts/confluence-client.md`
-- [ ] T007 [P] Implement `DownloadAttachment(downloadLink string) ([]byte, error)` in `confluence/client.go` per `contracts/confluence-client.md`
-- [ ] T008 Add HTTP mock tests for `GetChildren`, `GetAttachments`, and `DownloadAttachment` in `confluence/client_test.go` — cover pagination, empty results, auth errors, 404
-- [ ] T009 Implement `sanitizeFilename(title string) string` in `internal/cli/pull.go` per data-model.md rules (replace invalid chars, collapse hyphens, lowercase, trim, truncate, "untitled" fallback)
-- [ ] T010 [P] Add unit tests for `sanitizeFilename` in `internal/cli/pull_test.go` — cover special chars, consecutive hyphens, empty title, long title truncation, unicode
+- [x] T005 Implement `GetChildren(pageID string) ([]ChildPage, error)` in `confluence/client.go` with cursor-based pagination per `contracts/confluence-client.md`
+- [x] T006 [P] Implement `GetAttachments(pageID string) ([]Attachment, error)` in `confluence/client.go` with cursor-based pagination per `contracts/confluence-client.md`
+- [x] T007 [P] Implement `DownloadAttachment(downloadLink string) ([]byte, error)` in `confluence/client.go` per `contracts/confluence-client.md`
+- [x] T008 Add HTTP mock tests for `GetChildren`, `GetAttachments`, and `DownloadAttachment` in `confluence/client_test.go` — cover pagination, empty results, auth errors, 404
+- [x] T009 Implement `sanitizeFilename(title string) string` in `internal/cli/pull.go` per data-model.md rules (replace invalid chars, collapse hyphens, lowercase, trim, truncate, "untitled" fallback)
+- [x] T010 [P] Add unit tests for `sanitizeFilename` in `internal/cli/pull_test.go` — cover special chars, consecutive hyphens, empty title, long title truncation, unicode
 
 **Checkpoint**: API client extensions and filename sanitization ready — user story implementation can now begin.
 

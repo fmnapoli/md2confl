@@ -556,3 +556,160 @@ func (c *Client) getAttachmentFileID(pageID, filename string) (string, error) {
 
 	return result.Results[0].fileID(), nil
 }
+
+// ChildPage holds the ID and title of a child page.
+type ChildPage struct {
+	ID    string
+	Title string
+}
+
+// childrenResponse represents the v2 API response for child pages.
+type childrenResponse struct {
+	Results []struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+	} `json:"results"`
+	Links struct {
+		Next string `json:"next"`
+	} `json:"_links"`
+}
+
+// GetChildren returns all direct child pages of a page.
+// Paginates automatically until all children are fetched.
+func (c *Client) GetChildren(pageID string) ([]ChildPage, error) {
+	var children []ChildPage
+	reqURL := fmt.Sprintf("%s/pages/%s/children?limit=50", c.baseAPIURL, pageID)
+
+	for reqURL != "" {
+		req, err := http.NewRequest("GET", reqURL, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		resp, err := c.doRequest(req)
+		if err != nil {
+			return nil, &APIError{Category: ErrCategoryNetwork, Message: fmt.Sprintf("network error: %v", err)}
+		}
+
+		if resp.StatusCode != 200 {
+			err := c.handleErrorResponse(resp)
+			resp.Body.Close()
+			return nil, err
+		}
+
+		var result childrenResponse
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("decoding children response: %w", err)
+		}
+		resp.Body.Close()
+
+		for _, child := range result.Results {
+			children = append(children, ChildPage{ID: child.ID, Title: child.Title})
+		}
+
+		if result.Links.Next == "" {
+			break
+		}
+		// Next link is relative — prepend base URL
+		reqURL = strings.TrimRight(c.config.BaseURL, "/") + result.Links.Next
+	}
+
+	return children, nil
+}
+
+// Attachment holds metadata for a page attachment.
+type Attachment struct {
+	ID           string
+	Title        string // filename
+	MediaType    string
+	DownloadLink string // relative URL
+}
+
+// attachmentsResponse represents the v2 API response for attachments.
+type attachmentsResponse struct {
+	Results []struct {
+		ID           string `json:"id"`
+		Title        string `json:"title"`
+		MediaType    string `json:"mediaType"`
+		DownloadLink string `json:"downloadLink"`
+	} `json:"results"`
+	Links struct {
+		Next string `json:"next"`
+	} `json:"_links"`
+}
+
+// GetAttachments returns all attachments for a page.
+// Paginates automatically until all attachments are fetched.
+func (c *Client) GetAttachments(pageID string) ([]Attachment, error) {
+	var attachments []Attachment
+	reqURL := fmt.Sprintf("%s/pages/%s/attachments?limit=50", c.baseAPIURL, pageID)
+
+	for reqURL != "" {
+		req, err := http.NewRequest("GET", reqURL, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		resp, err := c.doRequest(req)
+		if err != nil {
+			return nil, &APIError{Category: ErrCategoryNetwork, Message: fmt.Sprintf("network error: %v", err)}
+		}
+
+		if resp.StatusCode != 200 {
+			err := c.handleErrorResponse(resp)
+			resp.Body.Close()
+			return nil, err
+		}
+
+		var result attachmentsResponse
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("decoding attachments response: %w", err)
+		}
+		resp.Body.Close()
+
+		for _, att := range result.Results {
+			attachments = append(attachments, Attachment{
+				ID:           att.ID,
+				Title:        att.Title,
+				MediaType:    att.MediaType,
+				DownloadLink: att.DownloadLink,
+			})
+		}
+
+		if result.Links.Next == "" {
+			break
+		}
+		reqURL = strings.TrimRight(c.config.BaseURL, "/") + result.Links.Next
+	}
+
+	return attachments, nil
+}
+
+// DownloadAttachment downloads an attachment by its relative download link.
+// Returns the raw bytes of the file content.
+func (c *Client) DownloadAttachment(downloadLink string) ([]byte, error) {
+	dlURL := strings.TrimRight(c.config.BaseURL, "/") + downloadLink
+	req, err := http.NewRequest("GET", dlURL, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.doRequest(req)
+	if err != nil {
+		return nil, &APIError{Category: ErrCategoryNetwork, Message: fmt.Sprintf("network error: %v", err)}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, c.handleErrorResponse(resp)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading attachment body: %w", err)
+	}
+
+	return data, nil
+}

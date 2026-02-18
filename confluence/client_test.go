@@ -619,3 +619,243 @@ func TestGetPage_ParentID(t *testing.T) {
 		t.Errorf("expected parentID 222, got %s", page.ParentID)
 	}
 }
+
+func TestGetChildren(t *testing.T) {
+	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" || !strings.Contains(r.URL.Path, "/children") {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{
+				{"id": "201", "title": "Child A"},
+				{"id": "202", "title": "Child B"},
+			},
+		})
+	})
+	defer ts.Close()
+
+	children, err := client.GetChildren("100")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children) != 2 {
+		t.Fatalf("expected 2 children, got %d", len(children))
+	}
+	if children[0].ID != "201" || children[0].Title != "Child A" {
+		t.Errorf("unexpected child: %+v", children[0])
+	}
+}
+
+func TestGetChildren_Pagination(t *testing.T) {
+	callCount := 0
+	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			json.NewEncoder(w).Encode(map[string]any{
+				"results": []map[string]any{
+					{"id": "201", "title": "Child A"},
+				},
+				"_links": map[string]any{
+					"next": r.URL.Path + "?cursor=abc&limit=50",
+				},
+			})
+		} else {
+			json.NewEncoder(w).Encode(map[string]any{
+				"results": []map[string]any{
+					{"id": "202", "title": "Child B"},
+				},
+			})
+		}
+	})
+	defer ts.Close()
+
+	children, err := client.GetChildren("100")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children) != 2 {
+		t.Fatalf("expected 2 children after pagination, got %d", len(children))
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 API calls, got %d", callCount)
+	}
+}
+
+func TestGetChildren_Empty(t *testing.T) {
+	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"results": []any{},
+		})
+	})
+	defer ts.Close()
+
+	children, err := client.GetChildren("100")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children) != 0 {
+		t.Errorf("expected empty, got %d", len(children))
+	}
+}
+
+func TestGetChildren_AuthError(t *testing.T) {
+	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(401)
+		_, _ = w.Write([]byte("Unauthorized"))
+	})
+	defer ts.Close()
+
+	_, err := client.GetChildren("100")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected APIError, got %T", err)
+	}
+	if apiErr.Category != ErrCategoryAuth {
+		t.Errorf("expected auth error, got %s", apiErr.Category)
+	}
+}
+
+func TestGetChildren_NotFound(t *testing.T) {
+	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(404)
+		_, _ = w.Write([]byte(`{"message":"page not found"}`))
+	})
+	defer ts.Close()
+
+	_, err := client.GetChildren("99999")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected APIError, got %T", err)
+	}
+	if apiErr.Category != ErrCategoryNotFound {
+		t.Errorf("expected not_found, got %s", apiErr.Category)
+	}
+}
+
+func TestGetAttachments(t *testing.T) {
+	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/attachments") {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{
+				{
+					"id":           "att1",
+					"title":        "image.png",
+					"mediaType":    "image/png",
+					"downloadLink": "/wiki/download/attachments/100/image.png",
+				},
+			},
+		})
+	})
+	defer ts.Close()
+
+	atts, err := client.GetAttachments("100")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(atts) != 1 {
+		t.Fatalf("expected 1 attachment, got %d", len(atts))
+	}
+	if atts[0].Title != "image.png" {
+		t.Errorf("expected image.png, got %s", atts[0].Title)
+	}
+	if atts[0].MediaType != "image/png" {
+		t.Errorf("expected image/png, got %s", atts[0].MediaType)
+	}
+	if atts[0].DownloadLink != "/wiki/download/attachments/100/image.png" {
+		t.Errorf("unexpected download link: %s", atts[0].DownloadLink)
+	}
+}
+
+func TestGetAttachments_Pagination(t *testing.T) {
+	callCount := 0
+	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			json.NewEncoder(w).Encode(map[string]any{
+				"results": []map[string]any{
+					{"id": "att1", "title": "a.png", "mediaType": "image/png", "downloadLink": "/dl/a.png"},
+				},
+				"_links": map[string]any{
+					"next": r.URL.Path + "?cursor=xyz&limit=50",
+				},
+			})
+		} else {
+			json.NewEncoder(w).Encode(map[string]any{
+				"results": []map[string]any{
+					{"id": "att2", "title": "b.png", "mediaType": "image/png", "downloadLink": "/dl/b.png"},
+				},
+			})
+		}
+	})
+	defer ts.Close()
+
+	atts, err := client.GetAttachments("100")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(atts) != 2 {
+		t.Fatalf("expected 2 attachments, got %d", len(atts))
+	}
+}
+
+func TestGetAttachments_Empty(t *testing.T) {
+	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"results": []any{}})
+	})
+	defer ts.Close()
+
+	atts, err := client.GetAttachments("100")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(atts) != 0 {
+		t.Errorf("expected empty, got %d", len(atts))
+	}
+}
+
+func TestDownloadAttachment(t *testing.T) {
+	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/download/") {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("fake-image-data"))
+	})
+	defer ts.Close()
+
+	data, err := client.DownloadAttachment("/wiki/download/attachments/100/image.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "fake-image-data" {
+		t.Errorf("unexpected data: %s", string(data))
+	}
+}
+
+func TestDownloadAttachment_NotFound(t *testing.T) {
+	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(404)
+		_, _ = w.Write([]byte(`{"message":"not found"}`))
+	})
+	defer ts.Close()
+
+	_, err := client.DownloadAttachment("/wiki/download/attachments/100/missing.png")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected APIError, got %T", err)
+	}
+	if apiErr.Category != ErrCategoryNotFound {
+		t.Errorf("expected not_found, got %s", apiErr.Category)
+	}
+}
