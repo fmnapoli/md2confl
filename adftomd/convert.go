@@ -353,9 +353,9 @@ func (c *converter) renderExpand(node adf.Node) {
 
 	c.buf.WriteString("<details><summary>")
 	c.buf.WriteString(title)
-	c.buf.WriteString("</summary>\n\n")
+	c.buf.WriteString("</summary>\n")
 	c.buf.WriteString(body)
-	c.buf.WriteString("\n\n</details>\n\n")
+	c.buf.WriteString("\n</details>\n\n")
 }
 
 // Inline rendering

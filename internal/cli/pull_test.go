@@ -705,7 +705,9 @@ func TestPullJSON_Error(t *testing.T) {
 	}
 	data, _ := json.Marshal(errOutput)
 	var parsed PullErrorOutput
-	json.Unmarshal(data, &parsed)
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 
 	if parsed.Status != "error" {
 		t.Errorf("expected error, got %s", parsed.Status)

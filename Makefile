@@ -4,13 +4,16 @@ LDFLAGS := -X main.Version=$(VERSION)
 LICENSE_HEADER := // Copyright 2026 md2confl contributors\n// SPDX-License-Identifier: Apache-2.0
 COVERAGE_THRESHOLD := 60
 
-.PHONY: build test lint test-coverage verify release license-check docker clean
+.PHONY: build test test-integration lint test-coverage verify release license-check docker clean
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o bin/$(BINARY) ./cmd/md2confl
 
 test:
 	go test -race ./...
+
+test-integration:
+	go test -tags integration -race -v -run TestRoundTrip_Integration ./internal/cli/...
 
 lint:
 	golangci-lint run ./...

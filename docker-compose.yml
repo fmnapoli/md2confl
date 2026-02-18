@@ -11,6 +11,7 @@
 #   docker compose run --rm pull-page            # Pull a single page by ID
 #   docker compose run --rm pull-docs            # Pull all pages from .confl2md.yml
 #   docker compose run --rm pull-dry-run         # Preview pull without writing files
+#   docker compose run --rm roundtrip-test       # Publish → pull → compare (fidelity test)
 #
 # All services build the image from the local Dockerfile before running.
 # Edit .env to configure Confluence credentials.
@@ -86,3 +87,14 @@ services:
       - .:/workspace
     env_file: .env
     command: ["pull", "--page-id", "${PULL_TEST_PAGE_ID}", "--dry-run"]
+
+  roundtrip-test:
+    build: .
+    network_mode: host
+    volumes:
+      - .:/workspace
+    env_file: .env
+    environment:
+      MD2CONFL_BIN: /usr/local/bin/md2confl
+    entrypoint: ["/bin/bash"]
+    command: ["/workspace/scripts/test-roundtrip.sh"]
