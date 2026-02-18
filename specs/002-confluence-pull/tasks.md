@@ -53,23 +53,23 @@
 
 ### Tests for US4
 
-- [ ] T011 [P] [US4] Create golden-file test pairs in `adftomd/testdata/`: `heading.adf.json`/`heading.md`, `paragraph.adf.json`/`paragraph.md`, `code-block.adf.json`/`code-block.md` per conversion rules in `contracts/adftomd.md`
-- [ ] T012 [P] [US4] Create golden-file test pairs in `adftomd/testdata/`: `table.adf.json`/`table.md`, `panel-note.adf.json`/`panel-note.md`, `task-list.adf.json`/`task-list.md`
-- [ ] T013 [P] [US4] Create golden-file test pairs in `adftomd/testdata/`: `mixed-marks.adf.json`/`mixed-marks.md`, `expand.adf.json`/`expand.md`, `unsupported.adf.json`/`unsupported.md`
-- [ ] T014 [P] [US4] Create golden-file test pair `adftomd/testdata/full-page.adf.json`/`full-page.md` covering a realistic page with headings, paragraphs, code, table, list, and panel combined
-- [ ] T015 [US4] Write golden-file test runner in `adftomd/convert_test.go` — iterate `testdata/*.adf.json`, call `Convert()`, compare output to corresponding `.md` file
+- [x] T011 [P] [US4] Create golden-file test pairs in `adftomd/testdata/`: `heading.adf.json`/`heading.md`, `paragraph.adf.json`/`paragraph.md`, `code-block.adf.json`/`code-block.md` per conversion rules in `contracts/adftomd.md`
+- [x] T012 [P] [US4] Create golden-file test pairs in `adftomd/testdata/`: `table.adf.json`/`table.md`, `panel-note.adf.json`/`panel-note.md`, `task-list.adf.json`/`task-list.md`
+- [x] T013 [P] [US4] Create golden-file test pairs in `adftomd/testdata/`: `mixed-marks.adf.json`/`mixed-marks.md`, `expand.adf.json`/`expand.md`, `unsupported.adf.json`/`unsupported.md`
+- [x] T014 [P] [US4] Create golden-file test pair `adftomd/testdata/full-page.adf.json`/`full-page.md` covering a realistic page with headings, paragraphs, code, table, list, and panel combined
+- [x] T015 [US4] Write golden-file test runner in `adftomd/convert_test.go` — iterate `testdata/*.adf.json`, call `Convert()`, compare output to corresponding `.md` file
 
 ### Implementation for US4
 
-- [ ] T016 [US4] Implement inline node/mark rendering in `adftomd/convert.go`: `text`, `hardBreak`, `emoji`, `mediaInline`, plus marks (`strong`, `em`, `strike`, `code`, `link`, `subsup`) with mark stacking order per `contracts/adftomd.md`
-- [ ] T017 [US4] Implement block node rendering in `adftomd/convert.go`: `heading`, `paragraph`, `codeBlock`, `blockquote`, `rule`
-- [ ] T018 [US4] Implement list rendering in `adftomd/convert.go`: `bulletList`, `orderedList`, `taskList` with nested list support
-- [ ] T019 [US4] Implement table rendering in `adftomd/convert.go`: `table` → GFM table with `tableRow`, `tableHeader`, `tableCell`
-- [ ] T020 [US4] Implement panel rendering in `adftomd/convert.go`: `panel` → GitHub alert syntax (`[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, `[!CAUTION]`) per panelType mapping
-- [ ] T021 [US4] Implement `mediaSingle` and `expand` rendering in `adftomd/convert.go`: images → `![alt](url)`, expand → `<details>/<summary>` HTML
-- [ ] T022 [US4] Implement unsupported node handling in `adftomd/convert.go`: unknown node types → `<!-- unsupported: nodeType -->` comment
-- [ ] T023 [US4] Implement `ConvertWithOptions()` with `ImageRewriter` callback — apply rewriter to media/mediaInline URLs before emitting Markdown
-- [ ] T024 [US4] Verify all golden-file tests pass with `go test ./adftomd/...` and fix any conversion discrepancies
+- [x] T016 [US4] Implement inline node/mark rendering in `adftomd/convert.go`: `text`, `hardBreak`, `emoji`, `mediaInline`, plus marks (`strong`, `em`, `strike`, `code`, `link`, `subsup`) with mark stacking order per `contracts/adftomd.md`
+- [x] T017 [US4] Implement block node rendering in `adftomd/convert.go`: `heading`, `paragraph`, `codeBlock`, `blockquote`, `rule`
+- [x] T018 [US4] Implement list rendering in `adftomd/convert.go`: `bulletList`, `orderedList`, `taskList` with nested list support
+- [x] T019 [US4] Implement table rendering in `adftomd/convert.go`: `table` → GFM table with `tableRow`, `tableHeader`, `tableCell`
+- [x] T020 [US4] Implement panel rendering in `adftomd/convert.go`: `panel` → GitHub alert syntax (`[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, `[!CAUTION]`) per panelType mapping
+- [x] T021 [US4] Implement `mediaSingle` and `expand` rendering in `adftomd/convert.go`: images → `![alt](url)`, expand → `<details>/<summary>` HTML
+- [x] T022 [US4] Implement unsupported node handling in `adftomd/convert.go`: unknown node types → `<!-- unsupported: nodeType -->` comment
+- [x] T023 [US4] Implement `ConvertWithOptions()` with `ImageRewriter` callback — apply rewriter to media/mediaInline URLs before emitting Markdown
+- [x] T024 [US4] Verify all golden-file tests pass with `go test ./adftomd/...` and fix any conversion discrepancies
 
 **Checkpoint**: `adftomd` package fully functional — `Convert()` handles all ADF node types. Run `go test ./adftomd/...`.
 

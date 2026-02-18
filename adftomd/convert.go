@@ -281,33 +281,30 @@ func (c *converter) renderTable(node adf.Node) {
 	}
 
 	// Write header row
-	c.buf.WriteString("| ")
-	for i := 0; i < colCount; i++ {
-		if i < len(rows[0]) {
-			c.buf.WriteString(rows[0][i])
-		}
-		c.buf.WriteString(" | ")
-	}
-	c.buf.WriteString("\n")
+	c.writeTableRow(rows[0], colCount)
 
 	// Write separator
-	c.buf.WriteString("| ")
-	for i := 0; i < colCount; i++ {
-		c.buf.WriteString("---")
-		c.buf.WriteString(" | ")
+	sep := make([]string, colCount)
+	for i := range sep {
+		sep[i] = "---"
 	}
-	c.buf.WriteString("\n")
+	c.writeTableRow(sep, colCount)
 
 	// Write data rows
 	for _, row := range rows[1:] {
-		c.buf.WriteString("| ")
-		for i := 0; i < colCount; i++ {
-			if i < len(row) {
-				c.buf.WriteString(row[i])
-			}
-			c.buf.WriteString(" | ")
+		c.writeTableRow(row, colCount)
+	}
+	c.buf.WriteString("\n")
+}
+
+func (c *converter) writeTableRow(cells []string, colCount int) {
+	c.buf.WriteString("|")
+	for i := 0; i < colCount; i++ {
+		c.buf.WriteString(" ")
+		if i < len(cells) {
+			c.buf.WriteString(cells[i])
 		}
-		c.buf.WriteString("\n")
+		c.buf.WriteString(" |")
 	}
 	c.buf.WriteString("\n")
 }

@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "type": "doc",
+  "content": [
+    {
+      "type": "heading",
+      "attrs": {"level": 1},
+      "content": [{"type": "text", "text": "Title"}]
+    },
+    {
+      "type": "heading",
+      "attrs": {"level": 2},
+      "content": [{"type": "text", "text": "Subtitle"}]
+    },
+    {
+      "type": "heading",
+      "attrs": {"level": 3},
+      "content": [{"type": "text", "text": "Section"}]
+    }
+  ]
+}

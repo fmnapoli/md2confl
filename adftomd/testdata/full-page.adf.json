@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "type": "doc",
+  "content": [
+    {
+      "type": "heading",
+      "attrs": {"level": 1},
+      "content": [{"type": "text", "text": "Project Overview"}]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {"type": "text", "text": "This is a "},
+        {"type": "text", "text": "comprehensive", "marks": [{"type": "strong"}]},
+        {"type": "text", "text": " example page."}
+      ]
+    },
+    {
+      "type": "heading",
+      "attrs": {"level": 2},
+      "content": [{"type": "text", "text": "Code Example"}]
+    },
+    {
+      "type": "codeBlock",
+      "attrs": {"language": "python"},
+      "content": [{"type": "text", "text": "print(\"hello\")"}]
+    },
+    {
+      "type": "heading",
+      "attrs": {"level": 2},
+      "content": [{"type": "text", "text": "Data Table"}]
+    },
+    {
+      "type": "table",
+      "content": [
+        {
+          "type": "tableRow",
+          "content": [
+            {"type": "tableHeader", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Feature"}]}]},
+            {"type": "tableHeader", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Status"}]}]}
+          ]
+        },
+        {
+          "type": "tableRow",
+          "content": [
+            {"type": "tableCell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Auth"}]}]},
+            {"type": "tableCell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Done", "marks": [{"type": "strong"}]}]}]}
+          ]
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "attrs": {"level": 2},
+      "content": [{"type": "text", "text": "Tasks"}]
+    },
+    {
+      "type": "bulletList",
+      "content": [
+        {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "First item"}]}]},
+        {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Second item"}]}]}
+      ]
+    },
+    {
+      "type": "panel",
+      "attrs": {"panelType": "success"},
+      "content": [
+        {"type": "paragraph", "content": [{"type": "text", "text": "All tests passing!"}]}
+      ]
+    },
+    {
+      "type": "rule"
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {"type": "text", "text": "End of document."}
+      ]
+    }
+  ]
+}
