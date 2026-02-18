@@ -735,6 +735,100 @@ func TestPullExitCodes(t *testing.T) {
 	}
 }
 
+func TestRewriteInterDocLinks(t *testing.T) {
+	dir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	// ADF body with an H1 heading and a paragraph containing a Confluence link
+	parentADF := `{"version":1,"type":"doc","content":[
+		{"type":"heading","attrs":{"level":1},"content":[{"type":"text","text":"Parent"}]},
+		{"type":"paragraph","content":[
+			{"type":"text","text":"See "},
+			{"type":"text","marks":[{"type":"link","attrs":{"href":"https://example.atlassian.net/wiki/spaces/DEV/pages/200/Child+Page"}}],"text":"Child Page"},
+			{"type":"text","text":" and "},
+			{"type":"text","marks":[{"type":"link","attrs":{"href":"https://example.atlassian.net/wiki/spaces/DEV/pages/200/Child+Page#section"}}],"text":"section"},
+			{"type":"text","text":" and "},
+			{"type":"text","marks":[{"type":"link","attrs":{"href":"https://external.example.com"}}],"text":"external"}
+		]}
+	]}`
+	childADF := `{"version":1,"type":"doc","content":[
+		{"type":"heading","attrs":{"level":1},"content":[{"type":"text","text":"Child Page"}]},
+		{"type":"paragraph","content":[
+			{"type":"text","text":"Back to "},
+			{"type":"text","marks":[{"type":"link","attrs":{"href":"https://example.atlassian.net/wiki/spaces/DEV/pages/100"}}],"text":"parent"}
+		]}
+	]}`
+
+	mock := &mockPullClient{
+		pages: map[string]*confluence.PageResponse{
+			"100": newMockPage("100", "Parent", parentADF),
+			"200": newMockPage("200", "Child Page", childADF),
+		},
+		children: map[string][]confluence.ChildPage{
+			"100": {{ID: "200", Title: "Child Page"}},
+		},
+		attachments: map[string][]confluence.Attachment{},
+	}
+
+	env := &pullEnv{
+		pageID:          "100",
+		outputDir:       dir,
+		recursive:       true,
+		depth:           10,
+		skipAttachments: true,
+		client:          mock,
+		stdout:          &stdout,
+		stderr:          &stderr,
+	}
+
+	// Use run flow to trigger rewriteInterDocLinks
+	err := env.pullRecursive("100", dir, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.rewriteInterDocLinks()
+
+	// Read parent README
+	parentPath := filepath.Join(dir, "parent", "README.md")
+	parentContent, err := os.ReadFile(parentPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentMD := string(parentContent)
+
+	// Check that the Confluence URL for child page 200 was rewritten to relative path
+	if strings.Contains(parentMD, "example.atlassian.net") {
+		t.Errorf("parent still contains Confluence URL:\n%s", parentMD)
+	}
+	if !strings.Contains(parentMD, "child-page.md") {
+		t.Errorf("parent should link to child-page.md, got:\n%s", parentMD)
+	}
+	// Check fragment is preserved
+	if !strings.Contains(parentMD, "child-page.md#section") {
+		t.Errorf("parent should preserve fragment #section, got:\n%s", parentMD)
+	}
+	// External link should be untouched
+	if !strings.Contains(parentMD, "https://external.example.com") {
+		t.Errorf("external link should be unchanged, got:\n%s", parentMD)
+	}
+
+	// Read child page
+	childPath := filepath.Join(dir, "parent", "child-page.md")
+	childContent, err := os.ReadFile(childPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childMD := string(childContent)
+
+	// Check that the link back to parent was rewritten
+	if strings.Contains(childMD, "example.atlassian.net") {
+		t.Errorf("child still contains Confluence URL:\n%s", childMD)
+	}
+	if !strings.Contains(childMD, "README.md") {
+		t.Errorf("child should link to README.md (parent), got:\n%s", childMD)
+	}
+}
+
 // helpers
 
 func expectFile(t *testing.T, path string) {

@@ -331,10 +331,21 @@ func (env *pullEnv) run() error {
 		pageID = page.ID
 	}
 
+	var err error
 	if env.recursive {
-		return env.pullRecursive(pageID, env.outputDir, env.depth)
+		err = env.pullRecursive(pageID, env.outputDir, env.depth)
+	} else {
+		err = env.pullSinglePage(pageID, env.outputDir)
 	}
-	return env.pullSinglePage(pageID, env.outputDir)
+	if err != nil {
+		return err
+	}
+
+	// Rewrite inter-document links (Confluence URLs → local relative paths)
+	if !env.dryRun {
+		env.rewriteInterDocLinks()
+	}
+	return nil
 }
 
 // pullSinglePage fetches a page by ID and writes it as Markdown.
@@ -695,10 +706,87 @@ func (env *pullEnv) runConfigPages() error {
 		}
 	}
 
+	// Rewrite inter-document links (Confluence URLs → local relative paths)
+	if !env.dryRun {
+		env.rewriteInterDocLinks()
+	}
+
 	if !env.jsonOutput {
 		fmt.Fprintf(env.stdout, "\n%d page(s) pulled successfully.\n", len(env.results))
 	}
 	return nil
+}
+
+// confluencePageURLPattern matches Confluence page URLs like:
+//
+//	https://site.atlassian.net/wiki/spaces/KEY/pages/12345
+//	https://site.atlassian.net/wiki/spaces/KEY/pages/12345/Page+Title
+//	https://site.atlassian.net/wiki/spaces/KEY/pages/12345/Page+Title#fragment
+//
+// Capture groups: (1) page ID, (2) optional fragment including #
+var confluencePageURLPattern = regexp.MustCompile(`https?://[^/]+/wiki/spaces/[^/]+/pages/(\d+)(?:/[^\s)#]*)?(#[^\s)]*)?`)
+
+// rewriteInterDocLinks rewrites Confluence page URLs in pulled files to local relative paths.
+// This is the reverse of the inter-document link resolution done during publish.
+func (env *pullEnv) rewriteInterDocLinks() {
+	if len(env.results) < 2 {
+		return // nothing to cross-link with a single page
+	}
+
+	// Build pageID → filePath map from pull results
+	pageMap := make(map[string]string)
+	for _, r := range env.results {
+		if r.Action == "written" {
+			pageMap[r.PageID] = r.FilePath
+		}
+	}
+
+	for _, r := range env.results {
+		if r.Action != "written" {
+			continue
+		}
+		content, err := os.ReadFile(r.FilePath)
+		if err != nil {
+			continue
+		}
+
+		original := string(content)
+		result := confluencePageURLPattern.ReplaceAllStringFunc(original, func(match string) string {
+			m := confluencePageURLPattern.FindStringSubmatch(match)
+			if len(m) < 2 {
+				return match
+			}
+			targetPageID := m[1]
+			fragment := ""
+			if len(m) >= 3 {
+				fragment = m[2] // includes the # prefix
+			}
+
+			targetPath, ok := pageMap[targetPageID]
+			if !ok {
+				return match // target page not pulled — keep external URL
+			}
+
+			// Compute relative path from current file's directory to target file
+			fromDir := filepath.Dir(r.FilePath)
+			relPath, err := filepath.Rel(fromDir, targetPath)
+			if err != nil {
+				return match
+			}
+			return relPath + fragment
+		})
+
+		if result != original {
+			if err := os.WriteFile(r.FilePath, []byte(result), 0644); err != nil {
+				env.addWarning(fmt.Sprintf("failed to rewrite links in %s: %v", r.FilePath, err))
+				continue
+			}
+			count := strings.Count(original, "https://") - strings.Count(result, "https://")
+			if count > 0 && !env.jsonOutput {
+				fmt.Fprintf(env.stdout, "Resolved %d inter-document link(s) in %q\n", count, filepath.Base(r.FilePath))
+			}
+		}
+	}
 }
 
 func (env *pullEnv) addWarning(msg string) {
