@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "type": "doc",
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {"type": "text", "text": "bold with ", "marks": [{"type": "strong"}]},
+        {"type": "text", "text": "code", "marks": [{"type": "code"}]},
+        {"type": "text", "text": " end."}
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {"type": "text", "text": "bold", "marks": [{"type": "strong"}]},
+        {"type": "text", "text": " "},
+        {"type": "text", "text": "code", "marks": [{"type": "code"}]},
+        {"type": "text", "text": " end."}
+      ]
+    }
+  ]
+}

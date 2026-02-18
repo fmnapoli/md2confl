@@ -1,4 +1,4 @@
 Hello world.
 
-First line.
+First line.\
 Second line.

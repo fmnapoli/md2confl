@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "type": "doc",
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {"type": "text", "text": "plain "},
+        {"type": "text", "text": "bold+italic", "marks": [{"type": "strong"}, {"type": "em"}]},
+        {"type": "text", "text": ", "},
+        {"type": "text", "text": "bold ", "marks": [{"type": "strong"}]},
+        {"type": "text", "text": "code", "marks": [{"type": "code"}, {"type": "strong"}]},
+        {"type": "text", "text": ", "},
+        {"type": "text", "text": "struck ", "marks": [{"type": "strike"}]},
+        {"type": "text", "text": "bold", "marks": [{"type": "strong"}, {"type": "strike"}]},
+        {"type": "text", "text": "."}
+      ]
+    }
+  ]
+}

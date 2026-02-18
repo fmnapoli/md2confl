@@ -188,11 +188,20 @@ func (c *converter) renderBulletList(node adf.Node, depth int) {
 }
 
 func (c *converter) renderOrderedList(node adf.Node, depth int) {
+	start := 1
+	if o, ok := node.Attrs["order"]; ok {
+		switch v := o.(type) {
+		case float64:
+			start = int(v)
+		case int:
+			start = v
+		}
+	}
 	for i, item := range node.Content {
 		if item.Type != "listItem" {
 			continue
 		}
-		prefix := fmt.Sprintf("%s%d. ", strings.Repeat("  ", depth), i+1)
+		prefix := fmt.Sprintf("%s%d. ", strings.Repeat("  ", depth), start+i)
 		c.renderListItem(item, prefix, depth)
 	}
 	if depth == 0 {
@@ -350,19 +359,216 @@ func (c *converter) renderExpand(node adf.Node) {
 }
 
 // Inline rendering
+//
+// renderInlines uses a mark-coalescing state machine: it tracks which
+// formatting marks (strong, em, strike, link, subsup) are currently open
+// and only emits delimiters when marks change between adjacent text nodes.
+// This prevents premature closing of marks that span multiple ADF text nodes,
+// e.g. **bold with `code` inside** instead of **bold with **`code`.
 
 func (c *converter) renderInlines(nodes []adf.Node) {
-	for _, node := range nodes {
-		c.renderInline(node)
+	// markStack tracks the order in which marks were opened,
+	// so they can be closed in correct (reverse) order.
+	type openMark struct {
+		kind  string // "strong", "em", "strike", "sup", "link"
+		delim string // closing delimiter
 	}
+	var markStack []openMark
+
+	isOpen := func(kind string) bool {
+		for _, m := range markStack {
+			if m.kind == kind {
+				return true
+			}
+		}
+		return false
+	}
+
+	// closeMarks closes a set of marks in correct stack order, without
+	// reopening marks that are also being closed. Marks not in the close
+	// set that sit above a closing mark are temporarily closed and reopened.
+	closeMarks := func(toClose map[string]bool) {
+		if len(toClose) == 0 {
+			return
+		}
+		// Find the deepest stack index among marks to close.
+		deepest := len(markStack)
+		for i, m := range markStack {
+			if toClose[m.kind] {
+				if i < deepest {
+					deepest = i
+				}
+				break // stack is ordered, first match is deepest
+			}
+		}
+		if deepest >= len(markStack) {
+			return
+		}
+		// Pop from top down to deepest, collecting marks to reopen.
+		var reopen []openMark
+		for len(markStack) > deepest {
+			top := markStack[len(markStack)-1]
+			markStack = markStack[:len(markStack)-1]
+			c.buf.WriteString(top.delim)
+			if !toClose[top.kind] {
+				reopen = append(reopen, top)
+			}
+		}
+		// Reopen marks that were only temporarily closed (reverse order).
+		for i := len(reopen) - 1; i >= 0; i-- {
+			m := reopen[i]
+			c.buf.WriteString(openDelim(m.kind))
+			markStack = append(markStack, m)
+		}
+	}
+
+	closeAll := func() {
+		for len(markStack) > 0 {
+			top := markStack[len(markStack)-1]
+			markStack = markStack[:len(markStack)-1]
+			c.buf.WriteString(top.delim)
+		}
+	}
+
+	openLinkHref := func() string {
+		for _, m := range markStack {
+			if m.kind == "link" {
+				// Extract href from the closing delimiter ](href)
+				return m.delim[2 : len(m.delim)-1]
+			}
+		}
+		return ""
+	}
+
+	for _, node := range nodes {
+		if node.Type != "text" {
+			closeAll()
+			c.renderNonTextInline(node)
+			continue
+		}
+
+		marks := extractMarks(node)
+
+		// Code mark is special: rendered as inline backticks, not tracked
+		// on the mark stack. Confluence drops other marks (e.g. strong)
+		// from code nodes, so we treat code nodes as transparent to the
+		// mark stack — don't close/open surrounding marks.
+		if marks.code && !marks.strong && !marks.em && !marks.strike && !marks.sup && marks.link == "" {
+			c.buf.WriteString("`")
+			c.buf.WriteString(node.Text)
+			c.buf.WriteString("`")
+			continue
+		}
+
+		// Collect all marks that need to close in this transition.
+		toClose := make(map[string]bool)
+		if isOpen("sup") && !marks.sup {
+			toClose["sup"] = true
+		}
+		if isOpen("strike") && !marks.strike {
+			toClose["strike"] = true
+		}
+		if isOpen("em") && !marks.em {
+			toClose["em"] = true
+		}
+		if isOpen("strong") && !marks.strong {
+			toClose["strong"] = true
+		}
+		if curLink := openLinkHref(); curLink != "" && marks.link != curLink {
+			toClose["link"] = true
+		}
+		closeMarks(toClose)
+
+		// Open marks that are newly active (outermost first: link, strong, em, strike, sup)
+		if marks.link != "" && !isOpen("link") {
+			c.buf.WriteString("[")
+			markStack = append(markStack, openMark{"link", "](" + marks.link + ")"})
+		}
+		if marks.strong && !isOpen("strong") {
+			c.buf.WriteString("**")
+			markStack = append(markStack, openMark{"strong", "**"})
+		}
+		if marks.em && !isOpen("em") {
+			c.buf.WriteString("*")
+			markStack = append(markStack, openMark{"em", "*"})
+		}
+		if marks.strike && !isOpen("strike") {
+			c.buf.WriteString("~~")
+			markStack = append(markStack, openMark{"strike", "~~"})
+		}
+		if marks.sup && !isOpen("sup") {
+			c.buf.WriteString("^")
+			markStack = append(markStack, openMark{"sup", "^"})
+		}
+
+		// Emit text, wrapping with code backticks if applicable
+		if marks.code {
+			c.buf.WriteString("`")
+			c.buf.WriteString(node.Text)
+			c.buf.WriteString("`")
+		} else {
+			c.buf.WriteString(node.Text)
+		}
+	}
+
+	closeAll()
 }
 
-func (c *converter) renderInline(node adf.Node) {
+func openDelim(kind string) string {
+	switch kind {
+	case "strong":
+		return "**"
+	case "em":
+		return "*"
+	case "strike":
+		return "~~"
+	case "sup":
+		return "^"
+	case "link":
+		return "["
+	}
+	return ""
+}
+
+// inlineMarks holds the parsed marks of a text node.
+type inlineMarks struct {
+	code, strong, em, strike, sup bool
+	link                          string
+}
+
+func extractMarks(node adf.Node) inlineMarks {
+	var m inlineMarks
+	for _, mark := range node.Marks {
+		switch mark.Type {
+		case "code":
+			m.code = true
+		case "strong":
+			m.strong = true
+		case "em":
+			m.em = true
+		case "strike":
+			m.strike = true
+		case "link":
+			if href, ok := mark.Attrs["href"]; ok {
+				if s, ok := href.(string); ok {
+					m.link = s
+				}
+			}
+		case "subsup":
+			if t, ok := mark.Attrs["type"]; ok {
+				if s, ok := t.(string); ok && s == "sup" {
+					m.sup = true
+				}
+			}
+		}
+	}
+	return m
+}
+
+func (c *converter) renderNonTextInline(node adf.Node) {
 	switch node.Type {
-	case "text":
-		c.renderText(node)
 	case "hardBreak":
-		c.buf.WriteString("\n")
+		c.buf.WriteString("\\\n")
 	case "emoji":
 		if sn, ok := node.Attrs["shortName"]; ok {
 			if s, ok := sn.(string); ok {
@@ -377,11 +583,9 @@ func (c *converter) renderInline(node adf.Node) {
 				alt = s
 			}
 		}
-		c.buf.WriteString(fmt.Sprintf("![%s](%s)", alt, url))
+		fmt.Fprintf(&c.buf, "![%s](%s)", alt, url)
 	case "inlineExtension":
 		c.renderInlineExtension(node)
-	default:
-		// Inline unsupported nodes are silently ignored
 	}
 }
 
@@ -397,69 +601,6 @@ func (c *converter) renderInlineExtension(node adf.Node) {
 			}
 		}
 	}
-}
-
-func (c *converter) renderText(node adf.Node) {
-	text := node.Text
-	if len(node.Marks) == 0 {
-		c.buf.WriteString(text)
-		return
-	}
-
-	// Apply marks following stacking order:
-	// code (innermost) → strong/em/strike → link (outermost) → subsup
-	var hasCode, hasStrong, hasEm, hasStrike bool
-	var linkHref string
-	var subSupType string
-
-	for _, mark := range node.Marks {
-		switch mark.Type {
-		case "code":
-			hasCode = true
-		case "strong":
-			hasStrong = true
-		case "em":
-			hasEm = true
-		case "strike":
-			hasStrike = true
-		case "link":
-			if href, ok := mark.Attrs["href"]; ok {
-				if s, ok := href.(string); ok {
-					linkHref = s
-				}
-			}
-		case "subsup":
-			if t, ok := mark.Attrs["type"]; ok {
-				if s, ok := t.(string); ok {
-					subSupType = s
-				}
-			}
-		}
-	}
-
-	if hasCode {
-		text = "`" + text + "`"
-	} else {
-		if hasStrong {
-			text = "**" + text + "**"
-		}
-		if hasEm {
-			text = "*" + text + "*"
-		}
-		if hasStrike {
-			text = "~~" + text + "~~"
-		}
-	}
-
-	if linkHref != "" {
-		text = "[" + text + "](" + linkHref + ")"
-	}
-
-	if subSupType == "sup" {
-		text = "^" + text + "^"
-	}
-
-	c.buf.WriteString(text)
 }
 
 func (c *converter) mediaURL(node adf.Node) string {
