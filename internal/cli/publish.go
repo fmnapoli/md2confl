@@ -435,6 +435,15 @@ func (app *appEnv) handlePublishServer(path string, source []byte, storageHTML s
 		}
 	}
 
+	// Auto-approve via Comala Workflows (se configurado)
+	if app.approve {
+		if err := client.ApproveWorkflow(result.PageID, "Review"); err != nil {
+			app.logger.Warn("Could not approve page", "error", err)
+		} else {
+			app.logger.Info("Approved", "pageID", result.PageID)
+		}
+	}
+
 	if app.writeMarker {
 		if err := app.writePageIDMarker(path, source, result.PageID); err != nil {
 			app.logger.Warn("Could not write page-id marker", "error", err)

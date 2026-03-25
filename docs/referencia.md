@@ -216,6 +216,7 @@ Output de erro:
 | `--verbose` | `bool` | `false` | Ativa logging detalhado no stderr. Mostra requisições HTTP (URL, status, tempo), decisões de resolução de links, retry de API e timing. |
 | `--concurrency` | `int` | `4` | Número máximo de operações paralelas (documentos, uploads, mermaid). Intervalo: 1–16. |
 | `--server` | `bool` | `false` | Usar Confluence Server/Data Center (REST API v1 + Storage Format XHTML). Sem esta flag, usa Cloud (API v2 + ADF). |
+| `--approve` | `bool` | `false` | Auto-approve via Comala Document Management após publish. Requer `--server`. Silenciosamente ignorado se workflow não configurado. Config: `approve`. |
 | `--user-agent` | `string` | — | Custom User-Agent header para requisições HTTP. Útil para ambientes com WAF/Cloudflare que filtram por User-Agent. Configurável via config: `user-agent`. |
 | `--version` | `bool` | `false` | Imprime a versão e sai com exit code 0. |
 

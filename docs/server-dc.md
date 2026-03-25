@@ -147,6 +147,7 @@ url: https://confluence.empresa.com
 space: DEVOPS
 email: meu-usuario
 server: true
+approve: true
 user-agent: meu-bot
 force: true
 write-marker: true
@@ -163,4 +164,5 @@ documents:
 | Flag | Tipo | Descrição |
 |------|------|-----------|
 | `--server` | `bool` | Usar Confluence Server/Data Center (REST API v1 + Storage Format) |
+| `--approve` | `bool` | Auto-approve após publish via Comala Document Management API (PATCH `/rest/cw/1/content/{id}/approvals/approve`). Se o workflow não estiver configurado na página (404), é silenciosamente ignorado. |
 | `--user-agent` | `string` | Custom User-Agent header para requisições HTTP |

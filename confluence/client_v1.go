@@ -471,3 +471,38 @@ func (c *ServerClient) DownloadAttachment(downloadLink string) ([]byte, error) {
 
 	return data, nil
 }
+
+// ApproveWorkflow aprova uma página via Comala Document Management API.
+// O approvalName é o nome da aprovação no workflow (ex: "Review").
+// Retorna nil se a aprovação foi bem-sucedida ou se o workflow não está configurado (404).
+func (c *ServerClient) ApproveWorkflow(pageID, approvalName string) error {
+	body := map[string]any{"name": approvalName}
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+
+	base := strings.TrimRight(c.config.BaseURL, "/")
+	reqURL := fmt.Sprintf("%s/rest/cw/1/content/%s/approvals/approve", base, pageID)
+	req, err := http.NewRequest("PATCH", reqURL, bytes.NewReader(jsonBody))
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.doRequest(req)
+	if err != nil {
+		return fmt.Errorf("approving page: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// 404 = workflow não configurado na página (não é erro)
+	if resp.StatusCode == 404 {
+		return nil
+	}
+
+	if resp.StatusCode != 200 {
+		return c.handleErrorResponse(resp)
+	}
+
+	return nil
+}

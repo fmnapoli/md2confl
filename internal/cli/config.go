@@ -26,6 +26,7 @@ type Config struct {
 	RepoURL     string      `yaml:"repo-url"`
 	UserAgent   string      `yaml:"user-agent"`
 	Server      *bool       `yaml:"server"`
+	Approve     *bool       `yaml:"approve"`
 	Documents   []DocConfig `yaml:"documents"`
 }
 
@@ -128,6 +129,9 @@ func (app *appEnv) applyConfig(explicitFlags map[string]bool) {
 	}
 	if !explicitFlags["server"] && cfg.Server != nil {
 		app.serverMode = *cfg.Server
+	}
+	if !explicitFlags["approve"] && cfg.Approve != nil {
+		app.approve = *cfg.Approve
 	}
 }
 

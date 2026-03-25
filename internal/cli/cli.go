@@ -54,6 +54,7 @@ type appEnv struct {
 	repoRoot       string
 	userAgent      string
 	serverMode     bool
+	approve        bool
 	config         *Config
 	docResults     map[string]*docPublishResult // abs input path → result
 	docResultsMu   *sync.Mutex
@@ -198,6 +199,7 @@ func (app *appEnv) registerFlags(fs *flag.FlagSet) {
 	fs.StringVar(&app.repoURL, "repo-url", "", "Repository base URL for resolving non-Markdown links (auto-detected from git)")
 	fs.StringVar(&app.userAgent, "user-agent", "", "Custom User-Agent header for HTTP requests (e.g., for Cloudflare bypass)")
 	fs.BoolVar(&app.serverMode, "server", false, "Use Confluence Server/Data Center API (REST API v1 + Storage Format)")
+	fs.BoolVar(&app.approve, "approve", false, "Auto-approve page after publish (Comala Workflows)")
 }
 
 // loadAndApplyConfig loads config from explicit path or auto-discovery,
