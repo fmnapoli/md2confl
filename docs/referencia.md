@@ -9,7 +9,9 @@ flowchart TD
 
     Publish --> WithDryRun{"--dry-run?"}
     WithDryRun -- "Sim" --> Simulate["Simula publicação<br/><small>sem chamar API</small>"]
-    WithDryRun -- "Não" --> API["Chama API<br/><small>Confluence Cloud</small>"]
+    WithDryRun -- "Não" --> ServerCheck{"--server?"}
+    ServerCheck -- "Não" --> API["Chama API v2<br/><small>Confluence Cloud (ADF)</small>"]
+    ServerCheck -- "Sim" --> APIv1["Chama API v1<br/><small>Server/DC (XHTML)</small>"]
 ```
 
 ## Uso rápido
@@ -213,6 +215,8 @@ Output de erro:
 | `--json` | `bool` | `false` | Formata output (sucesso e erro) como JSON em vez de texto. Útil para integração com CI/CD. |
 | `--verbose` | `bool` | `false` | Ativa logging detalhado no stderr. Mostra requisições HTTP (URL, status, tempo), decisões de resolução de links, retry de API e timing. |
 | `--concurrency` | `int` | `4` | Número máximo de operações paralelas (documentos, uploads, mermaid). Intervalo: 1–16. |
+| `--server` | `bool` | `false` | Usar Confluence Server/Data Center (REST API v1 + Storage Format XHTML). Sem esta flag, usa Cloud (API v2 + ADF). |
+| `--user-agent` | `string` | — | Custom User-Agent header para requisições HTTP. Útil para ambientes com WAF/Cloudflare que filtram por User-Agent. Configurável via config: `user-agent`. |
 | `--version` | `bool` | `false` | Imprime a versão e sai com exit code 0. |
 
 ## Restrições entre flags
