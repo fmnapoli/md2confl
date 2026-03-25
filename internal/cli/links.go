@@ -24,10 +24,11 @@ func (app *appEnv) resolveInterDocLinksFromResults() error {
 	}
 
 	client, err := confluence.NewClient(confluence.Config{
-		BaseURL:  app.url,
-		SpaceKey: app.space,
-		Email:    app.email,
-		Token:    app.token,
+		BaseURL:   app.url,
+		SpaceKey:  app.space,
+		Email:     app.email,
+		Token:     app.token,
+		UserAgent: app.userAgent,
 	})
 	if err != nil {
 		return err

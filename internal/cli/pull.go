@@ -81,6 +81,8 @@ type pullEnv struct {
 	configPath      string
 	verbose         bool
 	showVersion     bool
+	userAgent       string
+	serverMode      bool
 
 	config *PullConfig
 
@@ -188,6 +190,8 @@ func (env *pullEnv) parseFlags(args []string) error {
 	fs.StringVar(&env.configPath, "config", "", "Config file path (default: auto-detect .confl2md.yml)")
 	fs.BoolVar(&env.verbose, "verbose", false, "Debug logging to stderr")
 	fs.BoolVar(&env.showVersion, "version", false, "Show version")
+	fs.StringVar(&env.userAgent, "user-agent", "", "Custom User-Agent header for HTTP requests")
+	fs.BoolVar(&env.serverMode, "server", false, "Use Confluence Server/Data Center API")
 
 	fs.Usage = func() {
 		fmt.Fprintf(env.stderr, "md2confl pull — Pull Confluence pages to local Markdown\n\n")
@@ -292,17 +296,33 @@ func (env *pullEnv) validateFlags() error {
 func (env *pullEnv) run() error {
 	// Create real API client if not injected (tests inject mocks)
 	if env.client == nil {
-		client, err := confluence.NewClient(confluence.Config{
-			BaseURL:  env.url,
-			SpaceKey: env.space,
-			Email:    env.email,
-			Token:    env.token,
-		})
-		if err != nil {
-			return &apiError{message: err.Error(), exitCode: 1}
+		if env.serverMode {
+			client, err := confluence.NewServerClient(confluence.Config{
+				BaseURL:   env.url,
+				SpaceKey:  env.space,
+				Email:     env.email,
+				Token:     env.token,
+				UserAgent: env.userAgent,
+			})
+			if err != nil {
+				return &apiError{message: err.Error(), exitCode: 1}
+			}
+			client.SetLogger(env.logger)
+			env.client = &serverPullAdapter{client: client, space: env.space}
+		} else {
+			client, err := confluence.NewClient(confluence.Config{
+				BaseURL:   env.url,
+				SpaceKey:  env.space,
+				Email:     env.email,
+				Token:     env.token,
+				UserAgent: env.userAgent,
+			})
+			if err != nil {
+				return &apiError{message: err.Error(), exitCode: 1}
+			}
+			client.SetLogger(env.logger)
+			env.client = client
 		}
-		client.SetLogger(env.logger)
-		env.client = client
 	}
 
 	// Config-based pull: iterate pages[]
@@ -362,8 +382,20 @@ func (env *pullEnv) pullSinglePage(pageID, outputDir string) error {
 		atts, fileIDMap = env.fetchAttachments(pageID)
 	}
 
-	adfJSON := page.Body.AtlasDocFormat.Value
-	md := env.convertPageToMarkdown(pageID, page.Title, adfJSON, fileIDMap)
+	var md []byte
+	if env.serverMode {
+		// Server/DC: body contains Storage Format (XHTML) in AtlasDocFormat.Value
+		// (reused by the conversion in toPageResponse)
+		storageBody := page.Body.AtlasDocFormat.Value
+		var err error
+		md, err = convertStorageToMarkdown(pageID, page.Title, storageBody)
+		if err != nil {
+			return fmt.Errorf("converting storage format: %w", err)
+		}
+	} else {
+		adfJSON := page.Body.AtlasDocFormat.Value
+		md = env.convertPageToMarkdown(pageID, page.Title, adfJSON, fileIDMap)
+	}
 
 	filename := sanitizeFilename(page.Title) + ".md"
 	filePath := filepath.Join(outputDir, filename)

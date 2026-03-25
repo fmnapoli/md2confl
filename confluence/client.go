@@ -26,12 +26,13 @@ import (
 
 // Config holds Confluence connection settings.
 type Config struct {
-	BaseURL  string
-	SpaceKey string
-	SpaceID  string
-	ParentID string
-	Email    string
-	Token    string
+	BaseURL   string
+	SpaceKey  string
+	SpaceID   string
+	ParentID  string
+	Email     string
+	Token     string
+	UserAgent string // custom User-Agent header (empty = Go default)
 }
 
 // PublishResult holds the outcome of a publish operation.
@@ -91,6 +92,9 @@ func (c *Client) doRequest(req *http.Request) (*http.Response, error) {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", "application/json")
+	if c.config.UserAgent != "" {
+		req.Header.Set("User-Agent", c.config.UserAgent)
+	}
 
 	return c.doWithRetry(req)
 }

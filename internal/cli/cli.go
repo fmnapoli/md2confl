@@ -52,6 +52,8 @@ type appEnv struct {
 	configPath     string
 	repoURL        string
 	repoRoot       string
+	userAgent      string
+	serverMode     bool
 	config         *Config
 	docResults     map[string]*docPublishResult // abs input path → result
 	docResultsMu   *sync.Mutex
@@ -194,6 +196,8 @@ func (app *appEnv) registerFlags(fs *flag.FlagSet) {
 	fs.IntVar(&app.concurrency, "concurrency", 4, "Max parallel operations (1-16)")
 	fs.StringVar(&app.configPath, "config", "", "Path to config file (default: auto-detect .md2confl.yml)")
 	fs.StringVar(&app.repoURL, "repo-url", "", "Repository base URL for resolving non-Markdown links (auto-detected from git)")
+	fs.StringVar(&app.userAgent, "user-agent", "", "Custom User-Agent header for HTTP requests (e.g., for Cloudflare bypass)")
+	fs.BoolVar(&app.serverMode, "server", false, "Use Confluence Server/Data Center API (REST API v1 + Storage Format)")
 }
 
 // loadAndApplyConfig loads config from explicit path or auto-discovery,
@@ -320,6 +324,11 @@ func (app *appEnv) runFile(path string) error {
 		return fmt.Errorf("reading %q: %w", path, err)
 	}
 
+	// Server/DC mode: usa Storage Format (XHTML) em vez de ADF
+	if app.serverMode && app.publish {
+		return app.runFileServer(path, source)
+	}
+
 	doc, err := parser.ConvertToADF(source)
 	if err != nil {
 		return fmt.Errorf("converting %q: %w", path, err)
@@ -351,6 +360,25 @@ func (app *appEnv) runFile(path string) error {
 		return app.handlePublish(path, source, adfJSON, doc)
 	}
 	return app.handleDryRun(path, adfJSON, doc)
+}
+
+// runFileServer processa um arquivo Markdown para Confluence Server/DC.
+func (app *appEnv) runFileServer(path string, source []byte) error {
+	// Renderizar mermaid para SVG e substituir no markdown
+	modifiedSource, svgPaths, err := renderMermaidInMarkdown(source)
+	if err != nil {
+		return fmt.Errorf("rendering mermaid in %q: %w", path, err)
+	}
+	if len(svgPaths) > 0 {
+		app.logger.Info("Rendered mermaid diagrams", "count", len(svgPaths))
+	}
+
+	storageHTML, err := parser.ConvertToStorageFormat(modifiedSource)
+	if err != nil {
+		return fmt.Errorf("converting %q to storage format: %w", path, err)
+	}
+
+	return app.handlePublishServer(path, source, storageHTML, svgPaths)
 }
 
 func (app *appEnv) handleDryRun(path string, adfJSON []byte, doc *adf.Document) error {

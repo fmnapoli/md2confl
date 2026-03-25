@@ -24,6 +24,8 @@ type Config struct {
 	Force       *bool       `yaml:"force"`
 	WriteMarker *bool       `yaml:"write-marker"`
 	RepoURL     string      `yaml:"repo-url"`
+	UserAgent   string      `yaml:"user-agent"`
+	Server      *bool       `yaml:"server"`
 	Documents   []DocConfig `yaml:"documents"`
 }
 
@@ -120,6 +122,12 @@ func (app *appEnv) applyConfig(explicitFlags map[string]bool) {
 	}
 	if !explicitFlags["repo-url"] && cfg.RepoURL != "" {
 		app.repoURL = cfg.RepoURL
+	}
+	if !explicitFlags["user-agent"] && cfg.UserAgent != "" {
+		app.userAgent = cfg.UserAgent
+	}
+	if !explicitFlags["server"] && cfg.Server != nil {
+		app.serverMode = *cfg.Server
 	}
 }
 
