@@ -8,7 +8,7 @@ Quando `--publish` é usado, o md2confl decide entre criar ou atualizar uma pág
 ```mermaid
 flowchart TD
     Start["md2confl --publish --input doc.md"] --> ReadFile["Lê arquivo Markdown"]
-    ReadFile --> Convert["Converte para ADF"]
+    ReadFile --> Convert["Converte para ADF (Cloud)<br/>ou Storage Format (Server/DC)"]
     Convert --> HasMermaid{"Tem blocos mermaid?"}
 
     HasMermaid -- "Sim" --> RenderMermaid["mmdc renderiza cada bloco → SVG<br/><small>substitui codeBlock por mediaSingle > media</small>"]
@@ -34,9 +34,14 @@ flowchart TD
     Patch --> Marker
     Images -- "Não" --> Marker{"Flag --write-marker?"}
     Marker -- "Sim" --> WriteMarker["Prepende &lt;!-- confluence-page-id: XXXXX --&gt;<br/>no arquivo Markdown"]
-    Marker -- "Não" --> Done["✓ Imprime resultado"]
-    WriteMarker --> Done
+    Marker -- "Não" --> Approve{"Flag --approve?<br/><small>(Server/DC only)</small>"}
+    WriteMarker --> Approve
+    Approve -- "Sim" --> ComalaApprove["PATCH /rest/cw/1/content/{id}/approvals/approve<br/><small>Comala Workflows</small>"]
+    Approve -- "Não" --> Done["✓ Imprime resultado"]
+    ComalaApprove --> Done
 ```
+
+> **Server/Data Center:** quando `--server` é usado, o fluxo acima usa Storage Format (XHTML) em vez de ADF e a REST API v1 em vez da v2. Veja [Server/Data Center](server-dc.md) para detalhes.
 
 ## Publicação paralela
 

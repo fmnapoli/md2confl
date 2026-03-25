@@ -159,10 +159,41 @@ documents:
     parent-id: "12345"
 ```
 
+## Auto-approve com Comala Workflows
+
+Ambientes com [Comala Document Management](https://marketplace.atlassian.com/apps/142/comala-document-management) (plugin de workflows para Confluence Server/DC) podem exigir aprovação após a publicação de uma página.
+
+A flag `--approve` automatiza essa etapa — após publicar ou atualizar uma página, o md2confl envia um `PATCH` para a Comala API aprovando o estado "Review":
+
+```bash
+md2confl --input doc.md --publish --server --force --approve \
+  --url https://confluence.empresa.com \
+  --space DEVOPS \
+  --title "Minha Página"
+```
+
+### Fluxo
+
+1. Publica/atualiza a página normalmente
+2. Envia `PATCH /rest/cw/1/content/{pageID}/approvals/approve` com `{"name": "Review"}`
+3. Se o workflow não estiver configurado na página (HTTP 404), é **silenciosamente ignorado** — não gera erro
+4. Se a aprovação falhar por outro motivo, emite um warning no stderr (não interrompe a execução)
+
+### Configuração via YAML
+
+```yaml
+url: https://confluence.empresa.com
+space: DEVOPS
+server: true
+approve: true
+```
+
+> **Nota:** `--approve` requer `--server`. Não se aplica ao Confluence Cloud.
+
 ## Flags adicionais
 
 | Flag | Tipo | Descrição |
 |------|------|-----------|
 | `--server` | `bool` | Usar Confluence Server/Data Center (REST API v1 + Storage Format) |
-| `--approve` | `bool` | Auto-approve após publish via Comala Document Management API (PATCH `/rest/cw/1/content/{id}/approvals/approve`). Se o workflow não estiver configurado na página (404), é silenciosamente ignorado. |
+| `--approve` | `bool` | Auto-approve após publish via Comala Document Management API. Se o workflow não estiver configurado (404), é silenciosamente ignorado. |
 | `--user-agent` | `string` | Custom User-Agent header para requisições HTTP |

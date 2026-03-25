@@ -16,6 +16,11 @@ parent-id: "12345"
 force: true
 write-marker: true
 
+# Server/DC (opcionais — omitir para Cloud)
+# server: true              # usar REST API v1 + Storage Format
+# approve: true             # auto-approve via Comala Workflows
+# user-agent: meu-bot       # custom User-Agent header
+
 # Documentos — cada entry mapeia input → destino
 documents:
   # Publish: input → Confluence

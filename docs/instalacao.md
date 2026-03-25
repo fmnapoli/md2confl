@@ -65,9 +65,9 @@ make docker
 
 | Variável | Flag equivalente | Descrição |
 |----------|-----------------|-----------|
-| `CONFLUENCE_URL` | `--url` | URL base do Confluence Cloud |
-| `CONFLUENCE_EMAIL` | `--email` | E-mail da conta Atlassian |
-| `CONFLUENCE_TOKEN` | `--token` | API token da Atlassian |
+| `CONFLUENCE_URL` | `--url` | URL base do Confluence (Cloud ou Server/DC) |
+| `CONFLUENCE_EMAIL` | `--email` | E-mail (Cloud) ou username (Server/DC) |
+| `CONFLUENCE_TOKEN` | `--token` | API token (Cloud) ou password/PAT (Server/DC) |
 
 ```mermaid
 graph LR
@@ -94,9 +94,11 @@ export CONFLUENCE_TOKEN="seu-api-token"
 md2confl --input doc.md --publish --space DEVOPS --title "Minha Página"
 ```
 
-## Como obter o API token da Atlassian
+## Autenticação
 
-O `md2confl` usa autenticação Basic (email + API token) para acessar a API do Confluence Cloud. Siga os passos abaixo para gerar seu token:
+### Confluence Cloud
+
+O `md2confl` usa autenticação Basic (email + API token) para acessar a API do Confluence Cloud. Para gerar seu token:
 
 1. Acesse [https://id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens)
 2. Clique em **Create API token**
@@ -105,10 +107,34 @@ O `md2confl` usa autenticação Basic (email + API token) para acessar a API do 
 
 > **Importante:** o token é exibido apenas uma vez. Se perder, será necessário revogar e criar um novo.
 
-Configure o token como variável de ambiente:
-
 ```bash
+export CONFLUENCE_URL="https://site.atlassian.net"
+export CONFLUENCE_EMAIL="user@example.com"
 export CONFLUENCE_TOKEN="seu-api-token"
 ```
+
+### Confluence Server/Data Center
+
+No Server/DC, a autenticação usa username + password ou Personal Access Token (PAT):
+
+**Com password:**
+
+```bash
+export CONFLUENCE_URL="https://confluence.empresa.com"
+export CONFLUENCE_EMAIL="seu-usuario"       # username, não email
+export CONFLUENCE_TOKEN="sua-senha"
+```
+
+**Com Personal Access Token (PAT):**
+
+Se o Confluence Server tiver PATs habilitados (Configurações do perfil → Tokens de acesso pessoal):
+
+```bash
+export CONFLUENCE_URL="https://confluence.empresa.com"
+export CONFLUENCE_EMAIL="seu-usuario"
+export CONFLUENCE_TOKEN="seu-pat"
+```
+
+> **Nota:** o md2confl usa as mesmas variáveis de ambiente para Cloud e Server/DC. A diferença está no conteúdo: email + API token (Cloud) vs username + password/PAT (Server/DC).
 
 Para uso em CI/CD, armazene o token como secret (ex: GitHub Actions, GitLab CI) e injete via variável de ambiente. Nunca commite tokens em repositórios.

@@ -108,4 +108,5 @@ docker run --rm -v "$(pwd):/workspace" \
 - [Uso e Referência](referencia.md) — exemplos detalhados e flags
 - [Configuração](configuracao.md) — arquivo `.md2confl.yml` para múltiplos documentos
 - [Publicação](publicacao.md) — fluxo de publicação, Mermaid e imagens
+- [Server/Data Center](server-dc.md) — publicar no Confluence Server/DC com `--server`
 - [CI/CD](ci-cd.md) — automatizar publicação com GitHub Actions
