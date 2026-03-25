@@ -148,10 +148,11 @@ func (app *appEnv) publishOrSkip(in publishInput) (*confluence.PublishResult, er
 
 func (app *appEnv) handlePublish(path string, source, adfJSON []byte, doc *adf.Document) error {
 	client, err := confluence.NewClient(confluence.Config{
-		BaseURL:  app.url,
-		SpaceKey: app.space,
-		Email:    app.email,
-		Token:    app.token,
+		BaseURL:   app.url,
+		SpaceKey:  app.space,
+		Email:     app.email,
+		Token:     app.token,
+		UserAgent: app.userAgent,
 	})
 	if err != nil {
 		return &apiError{message: err.Error(), exitCode: 1}
@@ -341,5 +342,120 @@ func updatePageWithRetry(client *confluence.Client, pageID, title, adfJSON strin
 		}
 		return err
 	}
+	return nil
+}
+
+// handlePublishServer publica uma página usando Confluence Server/DC (REST API v1 + Storage Format).
+func (app *appEnv) handlePublishServer(path string, source []byte, storageHTML string, svgPaths []string) error {
+	client, err := confluence.NewServerClient(confluence.Config{
+		BaseURL:   app.url,
+		SpaceKey:  app.space,
+		Email:     app.email,
+		Token:     app.token,
+		UserAgent: app.userAgent,
+	})
+	if err != nil {
+		return &apiError{message: err.Error(), exitCode: 1}
+	}
+	client.SetLogger(app.logger)
+
+	title := deriveTitle(app.title, path, source)
+	pageID := extractPageID(source)
+
+	var result *confluence.PublishResult
+
+	switch {
+	case pageID != "":
+		page, err := client.GetPage(pageID)
+		if err != nil {
+			return app.wrapConfluenceError(err)
+		}
+		// Compara conteúdo antes de atualizar (idempotência)
+		if page.Body.AtlasDocFormat.Value == storageHTML {
+			app.logger.Info("Skipped (unchanged)", "title", title, "pageID", pageID)
+			func() {
+				unlock := app.lockOutput()
+				defer unlock()
+				printResult(app.stdout, Result{
+					Status:   "success",
+					PageID:   pageID,
+					Title:    title,
+					SpaceKey: app.space,
+					Action:   "skipped",
+					Version:  page.Version.Number,
+				}, app.jsonOutput)
+			}()
+			return nil
+		}
+		result, err = client.UpdatePage(pageID, title, storageHTML, page.Version.Number)
+		if err != nil {
+			return app.wrapConfluenceError(err)
+		}
+
+	case app.force:
+		page, err := client.FindByTitle(app.space, title)
+		if err != nil {
+			return app.wrapConfluenceError(err)
+		}
+		if page != nil {
+			result, err = client.UpdatePage(page.ID, title, storageHTML, page.Version.Number)
+			if err != nil {
+				return app.wrapConfluenceError(err)
+			}
+		} else {
+			result, err = client.CreatePage(app.space, title, app.parentID, storageHTML)
+			if err != nil {
+				return app.wrapConfluenceError(err)
+			}
+		}
+
+	default:
+		result, err = client.CreatePage(app.space, title, app.parentID, storageHTML)
+		if err != nil {
+			return app.wrapConfluenceError(err)
+		}
+	}
+
+	// Upload e patch de imagens mermaid (SVGs)
+	if len(svgPaths) > 0 {
+		patchedHTML, err := uploadAndPatchImagesServer(client, result.PageID, storageHTML, svgPaths, app.logger)
+		if err != nil {
+			app.logger.Warn("Failed to upload mermaid SVGs", "error", err)
+		} else if patchedHTML != storageHTML {
+			// Re-publicar com referências de attachment
+			page, err := client.GetPage(result.PageID)
+			if err == nil {
+				updated, err := client.UpdatePage(result.PageID, result.Title, patchedHTML, page.Version.Number)
+				if err != nil {
+					app.logger.Warn("Failed to update page with mermaid attachments", "error", err)
+				} else {
+					*result = *updated
+				}
+			}
+		}
+	}
+
+	if app.writeMarker {
+		if err := app.writePageIDMarker(path, source, result.PageID); err != nil {
+			app.logger.Warn("Could not write page-id marker", "error", err)
+		}
+	}
+
+	app.logger.Info("Published", "title", result.Title, "action", result.Action, "pageID", result.PageID)
+
+	func() {
+		unlock := app.lockOutput()
+		defer unlock()
+		printResult(app.stdout, Result{
+			Status:   "success",
+			PageID:   result.PageID,
+			PageURL:  result.PageURL,
+			Title:    result.Title,
+			SpaceKey: result.SpaceKey,
+			Action:   result.Action,
+			Version:  result.Version,
+		}, app.jsonOutput)
+	}()
+
 	return nil
 }
