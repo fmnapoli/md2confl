@@ -10,4 +10,4 @@ require github.com/yuin/goldmark-emoji v1.0.6
 
 require golang.org/x/sync v0.19.0
 
-require golang.org/x/net v0.52.0 // indirect
+require golang.org/x/net v0.52.0
