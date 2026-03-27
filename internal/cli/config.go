@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/fmnapoli/md2confl/confluence"
 	"golang.org/x/sync/errgroup"
 	"gopkg.in/yaml.v3"
 )
@@ -211,14 +212,28 @@ func (app *appEnv) runDocuments(inputFilter string) error {
 
 	// Second pass: resolve inter-document links across all published docs
 	// (including files from directory inputs, not just the config entries).
-	if len(app.docResults) > 1 {
-		if app.dryRun {
-			app.previewInterDocLinksFromResults()
+	if len(app.docResults) > 1 && !app.dryRun {
+		if app.serverMode {
+			client, err := confluence.NewServerClient(confluence.Config{
+				BaseURL:   app.url,
+				SpaceKey:  app.space,
+				Email:     app.email,
+				Token:     app.token,
+				UserAgent: app.userAgent,
+			})
+			if err == nil {
+				client.SetLogger(app.logger)
+				if err := app.resolveInterDocLinksServer(client); err != nil {
+					return fmt.Errorf("resolving inter-document links: %w", err)
+				}
+			}
 		} else {
 			if err := app.resolveInterDocLinksFromResults(); err != nil {
 				return fmt.Errorf("resolving inter-document links: %w", err)
 			}
 		}
+	} else if len(app.docResults) > 1 && app.dryRun {
+		app.previewInterDocLinksFromResults()
 	}
 
 	return nil

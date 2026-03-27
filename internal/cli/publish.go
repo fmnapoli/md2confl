@@ -422,6 +422,7 @@ func (app *appEnv) handlePublishServer(path string, source []byte, storageHTML s
 		if err != nil {
 			app.logger.Warn("Failed to upload mermaid SVGs", "error", err)
 		} else if patchedHTML != storageHTML {
+			storageHTML = patchedHTML // atualizar para uso no docResults
 			// Re-publicar com referências de attachment
 			page, err := client.GetPage(result.PageID)
 			if err == nil {
@@ -465,6 +466,17 @@ func (app *appEnv) handlePublishServer(path string, source []byte, storageHTML s
 			Version:  result.Version,
 		}, app.jsonOutput)
 	}()
+
+	// Salvar resultado para resolução de links inter-documento (Server mode)
+	if app.docResults != nil {
+		absPath, _ := filepath.Abs(path)
+		app.addDocResult(absPath, &docPublishResult{
+			pageID:    result.PageID,
+			pageURL:   result.PageURL,
+			title:     result.Title,
+			finalHTML: storageHTML,
+		})
+	}
 
 	return nil
 }

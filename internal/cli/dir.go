@@ -52,6 +52,11 @@ func (app *appEnv) runDir() error {
 		return app.convertDirTree(tree)
 	}
 
+	// Server/DC mode: usa Storage Format (XHTML) em vez de ADF
+	if app.serverMode {
+		return app.runDirServer(tree)
+	}
+
 	client, err := confluence.NewClient(confluence.Config{
 		BaseURL:   app.url,
 		SpaceKey:  app.space,
@@ -87,6 +92,348 @@ func (app *appEnv) runDir() error {
 		if err := app.resolveInterDocLinksFromResults(); err != nil {
 			return fmt.Errorf("resolving inter-document links: %w", err)
 		}
+	}
+
+	return nil
+}
+
+// runDirServer publica uma árvore de diretórios usando Confluence Server/DC (REST API v1 + Storage Format).
+func (app *appEnv) runDirServer(tree *DirEntry) error {
+	client, err := confluence.NewServerClient(confluence.Config{
+		BaseURL:   app.url,
+		SpaceKey:  app.space,
+		Email:     app.email,
+		Token:     app.token,
+		UserAgent: app.userAgent,
+	})
+	if err != nil {
+		return &apiError{message: err.Error(), exitCode: 1}
+	}
+	client.SetLogger(app.logger)
+
+	standaloneDir := app.docResults == nil
+	if standaloneDir {
+		app.docResults = make(map[string]*docPublishResult)
+		app.docResultsMu = &sync.Mutex{}
+	}
+
+	if err := app.publishDirTreeServer(client, app.parentID, tree, true); err != nil {
+		return err
+	}
+
+	// Segundo pass: resolver links inter-documento (*.md → pageId)
+	if standaloneDir && len(app.docResults) > 1 {
+		if err := app.resolveInterDocLinksServer(client); err != nil {
+			return fmt.Errorf("resolving inter-document links: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// publishDirTreeServer percorre a árvore e publica cada página via Server/DC API.
+func (app *appEnv) publishDirTreeServer(client *confluence.ServerClient, parentID string, tree *DirEntry, isRoot bool) error {
+	var pagePath string
+	var pageSource []byte
+	var storageHTML string
+
+	if tree.Readme != nil {
+		pagePath = tree.Readme.Path
+		pageSource = tree.Readme.Content
+
+		modifiedSource, svgPaths, err := renderMermaidInMarkdown(tree.Readme.Content)
+		if err != nil {
+			return fmt.Errorf("rendering mermaid in %q: %w", pagePath, err)
+		}
+		if len(svgPaths) > 0 {
+			app.logger.Info("Rendered mermaid diagrams", "count", len(svgPaths), "file", pagePath)
+		}
+
+		html, err := parser.ConvertToStorageFormat(modifiedSource)
+		if err != nil {
+			return fmt.Errorf("converting %q to storage format: %w", pagePath, err)
+		}
+		storageHTML = html
+		_ = svgPaths // upload de SVGs tratado após publicação
+	}
+
+	var title string
+	if isRoot && app.title != "" {
+		title = app.title
+	} else if tree.Readme != nil {
+		title = titleFromSource(tree.Readme.Content, tree.Name)
+	} else {
+		title = tree.Name
+	}
+
+	existingPageID := ""
+	if pageSource != nil {
+		existingPageID = extractPageID(pageSource)
+	}
+
+	dirResult, err := app.publishOrSkipServer(client, publishServerInput{
+		parentID:  parentID,
+		title:     title,
+		pageID:    existingPageID,
+		html:      storageHTML,
+		inputPath: pagePath,
+	})
+	if err != nil {
+		return err
+	}
+
+	func() {
+		unlock := app.lockOutput()
+		defer unlock()
+		printResult(app.stdout, Result{
+			Status: "success", PageID: dirResult.PageID, PageURL: dirResult.PageURL,
+			Title: dirResult.Title, SpaceKey: dirResult.SpaceKey, Action: dirResult.Action, Version: dirResult.Version,
+		}, app.jsonOutput)
+	}()
+
+	if app.writeMarker && tree.Readme != nil && dirResult.PageID != "" {
+		if err := app.writePageIDMarker(tree.Readme.Path, tree.Readme.Content, dirResult.PageID); err != nil {
+			app.logger.Warn("Could not write page-id marker", "error", err)
+		}
+	}
+
+	// Salvar resultado para resolução de links inter-documento
+	if app.docResults != nil && pagePath != "" {
+		absPath, _ := filepath.Abs(pagePath)
+		app.addDocResult(absPath, &docPublishResult{
+			pageID:    dirResult.PageID,
+			pageURL:   dirResult.PageURL,
+			title:     dirResult.Title,
+			finalHTML: storageHTML,
+		})
+	}
+
+	// Publicar demais arquivos markdown como subpáginas
+	for _, f := range tree.Files {
+		modifiedSource, svgPaths, err := renderMermaidInMarkdown(f.Content)
+		if err != nil {
+			return fmt.Errorf("rendering mermaid in %q: %w", f.Path, err)
+		}
+		if len(svgPaths) > 0 {
+			app.logger.Info("Rendered mermaid diagrams", "count", len(svgPaths), "file", f.Path)
+		}
+
+		html, err := parser.ConvertToStorageFormat(modifiedSource)
+		if err != nil {
+			return fmt.Errorf("converting %q to storage format: %w", f.Path, err)
+		}
+		childTitle := titleFromSource(f.Content, strings.TrimSuffix(filepath.Base(f.Path), ".md"))
+
+		childResult, err := app.publishOrSkipServer(client, publishServerInput{
+			parentID:  dirResult.PageID,
+			title:     childTitle,
+			pageID:    extractPageID(f.Content),
+			html:      html,
+			inputPath: f.Path,
+		})
+		if err != nil {
+			return err
+		}
+
+		// Upload de SVGs mermaid
+		if len(svgPaths) > 0 {
+			patchedHTML, err := uploadAndPatchImagesServer(client, childResult.PageID, html, svgPaths, app.logger)
+			if err != nil {
+				app.logger.Warn("Failed to upload mermaid SVGs", "error", err)
+			} else if patchedHTML != html {
+				page, err := client.GetPage(childResult.PageID)
+				if err == nil {
+					if updated, err := client.UpdatePage(childResult.PageID, childResult.Title, patchedHTML, page.Version.Number); err != nil {
+						app.logger.Warn("Failed to update page with mermaid attachments", "error", err)
+					} else {
+						*childResult = *updated
+					}
+				}
+			}
+		}
+
+		if app.writeMarker && childResult.PageID != "" {
+			if err := app.writePageIDMarker(f.Path, f.Content, childResult.PageID); err != nil {
+				app.logger.Warn("Could not write page-id marker", "error", err)
+			}
+		}
+
+		func() {
+			unlock := app.lockOutput()
+			defer unlock()
+			printResult(app.stdout, Result{
+				Status: "success", PageID: childResult.PageID, PageURL: childResult.PageURL,
+				Title: childResult.Title, SpaceKey: childResult.SpaceKey, Action: childResult.Action, Version: childResult.Version,
+			}, app.jsonOutput)
+		}()
+
+		// Salvar resultado para resolução de links inter-documento
+		if app.docResults != nil {
+			absPath, _ := filepath.Abs(f.Path)
+			app.addDocResult(absPath, &docPublishResult{
+				pageID:    childResult.PageID,
+				pageURL:   childResult.PageURL,
+				title:     childTitle,
+				finalHTML: html,
+			})
+		}
+	}
+
+	// Recursão nos subdiretórios
+	for _, child := range tree.Children {
+		if err := app.publishDirTreeServer(client, dirResult.PageID, &child, false); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// publishServerInput agrupa parâmetros para publicação via Server/DC.
+type publishServerInput struct {
+	parentID  string
+	title     string
+	pageID    string
+	html      string
+	inputPath string
+}
+
+// publishOrSkipServer publica ou atualiza uma página via Server/DC API.
+func (app *appEnv) publishOrSkipServer(client *confluence.ServerClient, in publishServerInput) (*confluence.PublishResult, error) {
+	switch {
+	case in.pageID != "":
+		page, err := client.GetPage(in.pageID)
+		if err != nil {
+			return nil, app.wrapConfluenceError(err)
+		}
+		if page.Body.AtlasDocFormat.Value == in.html {
+			app.logger.Info("Skipped (unchanged)", "title", in.title, "pageID", in.pageID)
+			return &confluence.PublishResult{
+				PageID:   in.pageID,
+				Title:    in.title,
+				SpaceKey: app.space,
+				Action:   "skipped",
+				Version:  page.Version.Number,
+			}, nil
+		}
+		result, err := client.UpdatePage(in.pageID, in.title, in.html, page.Version.Number)
+		if err != nil {
+			return nil, app.wrapConfluenceError(err)
+		}
+		return result, nil
+
+	case app.force:
+		page, err := client.FindByTitle(app.space, in.title)
+		if err != nil {
+			return nil, app.wrapConfluenceError(err)
+		}
+		if page != nil {
+			if err := app.moveIfNeededServer(client, page.ID, page.ParentID, in.parentID); err != nil {
+				return nil, err
+			}
+			result, err := client.UpdatePage(page.ID, in.title, in.html, page.Version.Number)
+			if err != nil {
+				return nil, app.wrapConfluenceError(err)
+			}
+			return result, nil
+		}
+		result, err := client.CreatePage(app.space, in.title, in.parentID, in.html)
+		if err != nil {
+			return nil, app.wrapConfluenceError(err)
+		}
+		return result, nil
+
+	default:
+		result, err := client.CreatePage(app.space, in.title, in.parentID, in.html)
+		if err != nil {
+			return nil, app.wrapConfluenceError(err)
+		}
+		return result, nil
+	}
+}
+
+// moveIfNeededServer move uma página para o parent correto via Server/DC API.
+func (app *appEnv) moveIfNeededServer(client *confluence.ServerClient, pageID, currentParentID, desiredParentID string) error {
+	if desiredParentID == "" || currentParentID == desiredParentID {
+		return nil
+	}
+	page, err := client.GetPage(pageID)
+	if err != nil {
+		return app.wrapConfluenceError(err)
+	}
+	// Atualiza ancestors para mover a página
+	_, err = client.UpdatePage(pageID, page.Title, page.Body.AtlasDocFormat.Value, page.Version.Number)
+	if err != nil {
+		app.logger.Warn("Could not move page", "pageID", pageID, "error", err)
+	}
+	return nil
+}
+
+// resolveInterDocLinksServer substitui links relativos *.md no Storage Format HTML
+// por URLs absolutas do Confluence usando os page-ids coletados no primeiro pass.
+func (app *appEnv) resolveInterDocLinksServer(client *confluence.ServerClient) error {
+	// Construir mapa: abs path do .md → URL da página Confluence
+	linkMap := make(map[string]string, len(app.docResults))
+	for absPath, res := range app.docResults {
+		linkMap[absPath] = res.pageURL
+	}
+
+	baseURL := strings.TrimRight(app.url, "/")
+
+	for absPath, res := range app.docResults {
+		if res.finalHTML == "" {
+			continue
+		}
+
+		baseDir := filepath.Dir(absPath)
+		patchedHTML := res.finalHTML
+		count := 0
+
+		// Substituir href="*.md" e href="subdir/*.md" por links Confluence
+		// Regex: href="([^"]*\.md)"
+		for targetPath, targetRes := range app.docResults {
+			// Calcular path relativo do doc atual para o target
+			relPath, err := filepath.Rel(baseDir, targetPath)
+			if err != nil {
+				continue
+			}
+
+			// Procurar href="relPath" no HTML
+			oldHref := fmt.Sprintf("href=\"%s\"", relPath)
+			if !strings.Contains(patchedHTML, oldHref) {
+				continue
+			}
+
+			// Gerar URL Confluence para o target
+			var newURL string
+			if targetRes.pageURL != "" {
+				newURL = targetRes.pageURL
+			} else {
+				newURL = fmt.Sprintf("%s/pages/viewpage.action?pageId=%s", baseURL, targetRes.pageID)
+			}
+
+			newHref := fmt.Sprintf("href=\"%s\"", newURL)
+			patchedHTML = strings.ReplaceAll(patchedHTML, oldHref, newHref)
+			count++
+		}
+
+		if count == 0 {
+			continue
+		}
+
+		// Re-publicar a página com links resolvidos
+		page, err := client.GetPage(res.pageID)
+		if err != nil {
+			app.logger.Warn("Could not fetch page for link resolution", "pageID", res.pageID, "error", err)
+			continue
+		}
+
+		if _, err := client.UpdatePage(res.pageID, res.title, patchedHTML, page.Version.Number); err != nil {
+			app.logger.Warn("Could not update page with resolved links", "pageID", res.pageID, "error", err)
+			continue
+		}
+
+		app.logger.Info("Resolved inter-document links", "count", count, "file", filepath.Base(absPath))
 	}
 
 	return nil

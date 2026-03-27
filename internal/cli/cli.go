@@ -25,10 +25,11 @@ import (
 // docPublishResult holds the publish outcome for a single document,
 // used to resolve inter-document links in the second pass.
 type docPublishResult struct {
-	pageID   string
-	pageURL  string
-	title    string
-	finalADF *adf.Document
+	pageID    string
+	pageURL   string
+	title     string
+	finalADF  *adf.Document
+	finalHTML string // Storage Format HTML (Server/DC mode only)
 }
 
 type appEnv struct {
