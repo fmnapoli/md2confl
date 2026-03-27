@@ -17,7 +17,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
-RUN npm install -g @mermaid-js/mermaid-cli
+ENV XDG_CONFIG_HOME=/tmp/.chromium
+ENV XDG_CACHE_HOME=/tmp/.chromium
+RUN npm install -g @mermaid-js/mermaid-cli \
+    && mkdir -p /tmp/.chromium /tmp/crashdumps && chmod 777 /tmp/.chromium /tmp/crashdumps
 COPY --from=builder /md2confl /usr/local/bin/md2confl
 RUN useradd -m md2confl
 USER md2confl
