@@ -392,7 +392,7 @@ func (app *appEnv) resolveInterDocLinksServer(client *confluence.ServerClient) e
 		// Substituir href="*.md" e href="subdir/*.md" por links Confluence
 		// Regex: href="([^"]*\.md)"
 		for targetPath, targetRes := range app.docResults {
-			// Calcular path relativo do doc atual para o target
+			// Compute relative path from current doc to target
 			relPath, err := filepath.Rel(baseDir, targetPath)
 			if err != nil {
 				continue

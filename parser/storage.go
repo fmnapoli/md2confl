@@ -290,7 +290,7 @@ func convertAlertsToPanels(s string) string {
 		}
 
 		// Substituir abertura: <blockquote>\n<p>[!TYPE]\n → macro abertura
-		// e marcar o </blockquote> correspondente usando heurística posicional
+		// and mark the matching </blockquote> using positional heuristic
 		openOld := fmt.Sprintf("<blockquote>\n<p>[!%s]\n", alertType)
 		openNew := fmt.Sprintf("<ac:structured-macro ac:name=\"%s\"><ac:rich-text-body>\n<p>", panelType)
 		s = strings.ReplaceAll(s, openOld, openNew)
