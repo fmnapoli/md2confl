@@ -59,7 +59,7 @@ func (r *Renderer) Render(ctx context.Context, source []byte) (string, error) {
 	puppeteerCfg := filepath.Join(r.OutputDir, "puppeteer-config.json")
 	r.puppeteerOnce.Do(func() {
 		cfg, _ := json.Marshal(map[string]any{
-			"args": []string{"--no-sandbox", "--disable-setuid-sandbox"},
+			"args": []string{"--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"},
 		})
 		r.puppeteerError = os.WriteFile(puppeteerCfg, cfg, 0644)
 	})
