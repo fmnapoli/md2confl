@@ -327,6 +327,13 @@ func (app *appEnv) publishOrSkipServer(client *confluence.ServerClient, in publi
 		if err != nil {
 			return nil, app.wrapConfluenceError(err)
 		}
+		// Only reuse existing page if it belongs to the correct parent.
+		// Prevents overwriting pages with the same title in other sections.
+		if page != nil && in.parentID != "" && page.ParentID != in.parentID {
+			app.logger.Info("Skipping page with same title under different parent",
+				"title", in.title, "found_parent", page.ParentID, "expected_parent", in.parentID)
+			page = nil
+		}
 		if page != nil {
 			if err := app.moveIfNeededServer(client, page.ID, page.ParentID, in.parentID); err != nil {
 				return nil, err

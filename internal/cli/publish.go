@@ -397,6 +397,12 @@ func (app *appEnv) handlePublishServer(path string, source []byte, storageHTML s
 		if err != nil {
 			return app.wrapConfluenceError(err)
 		}
+		// Only reuse existing page if it belongs to the correct parent.
+		if page != nil && app.parentID != "" && page.ParentID != app.parentID {
+			app.logger.Info("Skipping page with same title under different parent",
+				"title", title, "found_parent", page.ParentID, "expected_parent", app.parentID)
+			page = nil
+		}
 		if page != nil {
 			result, err = client.UpdatePage(page.ID, title, storageHTML, page.Version.Number)
 			if err != nil {
