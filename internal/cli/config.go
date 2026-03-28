@@ -236,5 +236,26 @@ func (app *appEnv) runDocuments(inputFilter string) error {
 		app.previewInterDocLinksFromResults()
 	}
 
+	// Approve all published pages via Comala Workflows (after all updates are done)
+	if app.approve && app.serverMode && !app.dryRun {
+		client, err := confluence.NewServerClient(confluence.Config{
+			BaseURL:   app.url,
+			SpaceKey:  app.space,
+			Email:     app.email,
+			Token:     app.token,
+			UserAgent: app.userAgent,
+		})
+		if err == nil {
+			client.SetLogger(app.logger)
+			for _, res := range app.docResults {
+				if res.pageID != "" {
+					if err := client.ApproveWorkflow(res.pageID, "Review"); err != nil {
+						app.logger.Warn("Could not approve page", "pageID", res.pageID, "error", err)
+					}
+				}
+			}
+		}
+	}
+
 	return nil
 }
