@@ -255,6 +255,25 @@ graph LR
 | `1` | Erro do usuário | Flags inválidas ou conflitantes, arquivo/diretório não encontrado, combinação inválida de opções |
 | `2` | Erro da API | Autenticação falhou (401/403), recurso não encontrado (404), conflito de versão (409), conteúdo inválido (400/422), erro de rede |
 
+### Falhas parciais
+
+Uma falha em um documento **não** aborta os demais: ela é registrada, o
+documento é pulado e a execução continua — inclusive o segundo pass que resolve
+os links inter-documento, que roda depois de todas as publicações. No fim, os
+documentos pulados aparecem num resumo em `stderr` e o processo sai com código
+diferente de zero (o maior entre os códigos das falhas):
+
+```
+2 document(s) failed:
+  - docs/guia.md: title search rejected with HTTP 403 (space "DEVOPS", title "Guia") — ...
+      Hint: not transient — retrying will not help; add a <!-- confluence-page-id: N --> marker ...
+  - docs/api.md: invalid ADF content: ...
+Error: 2 document(s) failed and were skipped
+```
+
+Quando a página de um **diretório** falha, a subárvore inteira é pulada — sem
+ela não há página pai para as filhas.
+
 No modo `--json`, erros retornam um JSON com `status`, `code`, `message` e `hint`:
 
 ```json
@@ -271,6 +290,7 @@ No modo `--json`, erros retornam um JSON com `status`, `code`, `message` e `hint
 | Categoria | HTTP Status | Mensagem | Hint |
 |-----------|-------------|----------|------|
 | `auth` | 401, 403 | `authentication failed — invalid or expired API token` | Verificar `--token` ou `CONFLUENCE_TOKEN` |
+| `blocked` | 403 na busca por título | `title search rejected with HTTP 403 (space …, title …)` | Adicionar o marcador `<!-- confluence-page-id: N -->` ao documento (não é transiente; não é retentado) |
 | `not_found` | 404 | `<resource> not found: <id>` | Verificar ID ou chave do recurso |
 | `conflict` | 409 | `version conflict — page was updated concurrently` | Retentar a operação |
 | `validation` | 400, 422 | `invalid ADF content: <detalhes>` | Verificar Markdown por elementos não suportados |
