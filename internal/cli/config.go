@@ -4,7 +4,6 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -190,18 +189,19 @@ func (app *appEnv) runDocuments(inputFilter string) error {
 	app.docResults = make(map[string]*docPublishResult)
 	var mu sync.Mutex
 
-	// First pass: publish all documents (parallel)
+	// First pass: publish all documents (parallel).
+	// A document that fails is recorded and skipped instead of aborting the
+	// run: the other documents still get published, and the second pass below
+	// still resolves the links of everything that succeeded. The run fails as
+	// a whole at the end, in Run, via the aggregated failure error.
 	app.docResultsMu = &mu
-	g, ctx := errgroup.WithContext(context.Background())
+	var g errgroup.Group
 	g.SetLimit(app.concurrency)
 	for _, doc := range filtered {
 		g.Go(func() error {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
 			clone := app.withDocumentConfig(doc)
 			if err := clone.run(); err != nil {
-				return fmt.Errorf("processing %q: %w", doc.Input, err)
+				app.recordDocFailure(doc.Input, err)
 			}
 			return nil
 		})
