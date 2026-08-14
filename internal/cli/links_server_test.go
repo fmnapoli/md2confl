@@ -102,10 +102,15 @@ func (f *fakeConfluenceServer) handle(w http.ResponseWriter, r *http.Request) {
 				},
 				"version":   map[string]any{"number": p.Version},
 				"ancestors": []map[string]any{{"id": p.Parent}},
-				"_links":    map[string]any{"webui": "/display/TEST/" + p.ID, "base": f.baseURL},
+				// Como na API real, o _links do resultado traz só o caminho:
+				// o "base" fica no envelope da busca.
+				"_links": map[string]any{"webui": "/display/TEST/" + p.ID},
 			})
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"results": results})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"results": results,
+			"_links":  map[string]any{"base": f.baseURL},
+		})
 
 	// CreatePage
 	case r.Method == http.MethodPost && r.URL.Path == "/rest/api/content":

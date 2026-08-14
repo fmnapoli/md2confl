@@ -335,9 +335,19 @@ type publishServerInput struct {
 // fallback viewpage.action.
 func (app *appEnv) skippedResult(page *confluence.PageResponse, title string) *confluence.PublishResult {
 	app.logger.Info("Skipped (unchanged)", "title", title, "pageID", page.ID)
+	// Uma URL relativa aqui viraria destino de link e mudaria de valor entre
+	// execuções, republicando quem aponta para esta página.
+	pageURL := ""
+	if page.Links.WebUI != "" {
+		base := page.Links.Base
+		if base == "" {
+			base = strings.TrimRight(app.url, "/")
+		}
+		pageURL = base + page.Links.WebUI
+	}
 	return &confluence.PublishResult{
 		PageID:   page.ID,
-		PageURL:  page.Links.Base + page.Links.WebUI,
+		PageURL:  pageURL,
 		Title:    title,
 		SpaceKey: app.space,
 		Action:   "skipped",

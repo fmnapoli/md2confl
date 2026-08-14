@@ -276,8 +276,14 @@ func (c *ServerClient) FindByTitle(spaceKey, title string) (*PageResponse, error
 		return nil, c.handleErrorResponse(resp)
 	}
 
+	// Na busca, o "base" só vem no _links do envelope — o _links de cada
+	// resultado traz apenas o caminho (webui). Sem copiá-lo, a URL da página
+	// sairia relativa e não serviria como destino de link.
 	var result struct {
 		Results []v1PageResponse `json:"results"`
+		Links   struct {
+			Base string `json:"base"`
+		} `json:"_links"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decoding search response: %w", err)
@@ -286,7 +292,11 @@ func (c *ServerClient) FindByTitle(spaceKey, title string) (*PageResponse, error
 	if len(result.Results) == 0 {
 		return nil, nil
 	}
-	return result.Results[0].toPageResponse(), nil
+	page := result.Results[0]
+	if page.Links.Base == "" {
+		page.Links.Base = result.Links.Base
+	}
+	return page.toPageResponse(), nil
 }
 
 // UploadAttachment faz upload de um arquivo como attachment (API v1).
