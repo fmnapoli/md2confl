@@ -360,94 +360,24 @@ func (app *appEnv) handlePublishServer(path string, source []byte, storageHTML s
 	client.SetLogger(app.logger)
 
 	title := deriveTitle(app.title, path, source)
-	pageID := extractPageID(source)
 
-	var result *confluence.PublishResult
+	// O corpo publicado já sai com as referências de attachment dos diagramas e
+	// com o marcador do digest da fonte — é o que a comparação de idempotência
+	// e o segundo pass de links usam como base.
+	storageHTML = stampSourceMarker(title, patchMermaidRefs(storageHTML, svgPaths))
 
-	switch {
-	case pageID != "":
-		page, err := client.GetPage(pageID)
-		if err != nil {
-			return app.wrapConfluenceError(err)
-		}
-		// Compara conteúdo antes de atualizar (idempotência)
-		if page.Body.AtlasDocFormat.Value == storageHTML {
-			pageURL := page.Links.Base + page.Links.WebUI
-			app.logger.Info("Skipped (unchanged)", "title", title, "pageID", pageID)
-			func() {
-				unlock := app.lockOutput()
-				defer unlock()
-				printResult(app.stdout, Result{
-					Status:   "success",
-					PageID:   pageID,
-					PageURL:  pageURL,
-					Title:    title,
-					SpaceKey: app.space,
-					Action:   "skipped",
-					Version:  page.Version.Number,
-				}, app.jsonOutput)
-			}()
-			// Mesmo pulando a publicação, o resultado precisa entrar em
-			// docResults: sem ele o segundo pass ignora a página e os links
-			// relativos nunca são resolvidos — e como o conteúdo não muda,
-			// a página seguiria pulada (e quebrada) em todas as execuções.
-			app.recordDocResultServer(path, pageID, pageURL, title, storageHTML)
-			return nil
-		}
-		result, err = client.UpdatePage(pageID, title, storageHTML, page.Version.Number)
-		if err != nil {
-			return app.wrapConfluenceError(err)
-		}
-
-	case app.force:
-		page, err := client.FindByTitle(app.space, title)
-		if err != nil {
-			return app.wrapConfluenceError(err)
-		}
-		// Only reuse existing page if it belongs to the correct parent.
-		if page != nil && app.parentID != "" && page.ParentID != app.parentID {
-			app.logger.Info("Skipping page with same title under different parent",
-				"title", title, "found_parent", page.ParentID, "expected_parent", app.parentID)
-			page = nil
-		}
-		if page != nil {
-			result, err = client.UpdatePage(page.ID, title, storageHTML, page.Version.Number)
-			if err != nil {
-				return app.wrapConfluenceError(err)
-			}
-		} else {
-			result, err = client.CreatePage(app.space, title, app.parentID, storageHTML)
-			if err != nil {
-				return app.wrapConfluenceError(err)
-			}
-		}
-
-	default:
-		result, err = client.CreatePage(app.space, title, app.parentID, storageHTML)
-		if err != nil {
-			return app.wrapConfluenceError(err)
-		}
+	result, err := app.publishOrSkipServer(client, publishServerInput{
+		parentID:  app.parentID,
+		title:     title,
+		pageID:    extractPageID(source),
+		html:      storageHTML,
+		inputPath: path,
+	})
+	if err != nil {
+		return err
 	}
 
-	// Upload e patch de imagens mermaid (SVGs)
-	if len(svgPaths) > 0 {
-		patchedHTML, err := uploadAndPatchImagesServer(client, result.PageID, storageHTML, svgPaths, app.logger)
-		if err != nil {
-			app.logger.Warn("Failed to upload mermaid SVGs", "error", err)
-		} else if patchedHTML != storageHTML {
-			storageHTML = patchedHTML // atualizar para uso no docResults
-			// Re-publicar com referências de attachment
-			page, err := client.GetPage(result.PageID)
-			if err == nil {
-				updated, err := client.UpdatePage(result.PageID, result.Title, patchedHTML, page.Version.Number)
-				if err != nil {
-					app.logger.Warn("Failed to update page with mermaid attachments", "error", err)
-				} else {
-					*result = *updated
-				}
-			}
-		}
-	}
+	uploadMermaidAttachments(client, result.PageID, svgPaths, app.logger)
 
 	// Auto-approve via Comala Workflows (se configurado)
 	if app.approve {
@@ -464,7 +394,10 @@ func (app *appEnv) handlePublishServer(path string, source []byte, storageHTML s
 		}
 	}
 
-	app.logger.Info("Published", "title", result.Title, "action", result.Action, "pageID", result.PageID)
+	// O caso "skipped" já é logado por publishOrSkipServer.
+	if result.Action != "skipped" {
+		app.logger.Info("Published", "title", result.Title, "action", result.Action, "pageID", result.PageID)
+	}
 
 	func() {
 		unlock := app.lockOutput()

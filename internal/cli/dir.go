@@ -166,6 +166,7 @@ func (app *appEnv) publishDirTreeServer(client *confluence.ServerClient, parentI
 	var pagePath string
 	var pageSource []byte
 	var storageHTML string
+	var pageSVGs []string
 
 	if tree.Readme != nil {
 		pagePath = tree.Readme.Path
@@ -186,7 +187,7 @@ func (app *appEnv) publishDirTreeServer(client *confluence.ServerClient, parentI
 			return nil
 		}
 		storageHTML = html
-		_ = svgPaths // upload de SVGs tratado após publicação
+		pageSVGs = svgPaths
 	}
 
 	var title string
@@ -203,6 +204,10 @@ func (app *appEnv) publishDirTreeServer(client *confluence.ServerClient, parentI
 		existingPageID = extractPageID(pageSource)
 	}
 
+	// Referências de attachment e marcador do digest entram antes de publicar:
+	// é esse corpo que a comparação de idempotência e o segundo pass usam.
+	storageHTML = stampSourceMarker(title, patchMermaidRefs(storageHTML, pageSVGs))
+
 	dirResult, err := app.publishOrSkipServer(client, publishServerInput{
 		parentID:  parentID,
 		title:     title,
@@ -214,6 +219,8 @@ func (app *appEnv) publishDirTreeServer(client *confluence.ServerClient, parentI
 		app.recordDirFailure(tree, err)
 		return nil
 	}
+
+	uploadMermaidAttachments(client, dirResult.PageID, pageSVGs, app.logger)
 
 	func() {
 		unlock := app.lockOutput()
@@ -260,6 +267,7 @@ func (app *appEnv) publishDirTreeServer(client *confluence.ServerClient, parentI
 			continue
 		}
 		childTitle := titleFromSource(f.Content, strings.TrimSuffix(filepath.Base(f.Path), ".md"))
+		html = stampSourceMarker(childTitle, patchMermaidRefs(html, svgPaths))
 
 		childResult, err := app.publishOrSkipServer(client, publishServerInput{
 			parentID:  dirResult.PageID,
@@ -273,26 +281,7 @@ func (app *appEnv) publishDirTreeServer(client *confluence.ServerClient, parentI
 			continue
 		}
 
-		// Upload de SVGs mermaid
-		if len(svgPaths) > 0 {
-			patchedHTML, err := uploadAndPatchImagesServer(client, childResult.PageID, html, svgPaths, app.logger)
-			if err != nil {
-				app.logger.Warn("Failed to upload mermaid SVGs", "error", err)
-			} else if patchedHTML != html {
-				page, err := client.GetPage(childResult.PageID)
-				if err == nil {
-					if updated, err := client.UpdatePage(childResult.PageID, childResult.Title, patchedHTML, page.Version.Number); err != nil {
-						app.logger.Warn("Failed to update page with mermaid attachments", "error", err)
-					} else {
-						*childResult = *updated
-					}
-				}
-				// O segundo pass republica o finalHTML com os links
-				// resolvidos; sem esta atualização ele reenviaria o HTML
-				// anterior ao patch, apagando as referências de attachment.
-				html = patchedHTML
-			}
-		}
+		uploadMermaidAttachments(client, childResult.PageID, svgPaths, app.logger)
 
 		if app.writeMarker && childResult.PageID != "" {
 			if err := app.writePageIDMarker(f.Path, f.Content, childResult.PageID); err != nil {
@@ -340,7 +329,26 @@ type publishServerInput struct {
 	inputPath string
 }
 
+// skippedResult monta o resultado de uma página que já está publicada com o
+// conteúdo atual. A URL vem preenchida porque o segundo pass precisa dela para
+// resolver os links que apontam para esta página — sem ela ele cairia no
+// fallback viewpage.action.
+func (app *appEnv) skippedResult(page *confluence.PageResponse, title string) *confluence.PublishResult {
+	app.logger.Info("Skipped (unchanged)", "title", title, "pageID", page.ID)
+	return &confluence.PublishResult{
+		PageID:   page.ID,
+		PageURL:  page.Links.Base + page.Links.WebUI,
+		Title:    title,
+		SpaceKey: app.space,
+		Action:   "skipped",
+		Version:  page.Version.Number,
+	}
+}
+
 // publishOrSkipServer publica ou atualiza uma página via Server/DC API.
+// A decisão de pular compara o digest da fonte gravado no corpo publicado com o
+// do conteúdo atual (ver idempotency.go): comparar o HTML cru com o corpo
+// publicado não funciona, porque este já passou pela resolução de links.
 func (app *appEnv) publishOrSkipServer(client *confluence.ServerClient, in publishServerInput) (*confluence.PublishResult, error) {
 	switch {
 	case in.pageID != "":
@@ -348,18 +356,8 @@ func (app *appEnv) publishOrSkipServer(client *confluence.ServerClient, in publi
 		if err != nil {
 			return nil, app.wrapConfluenceError(err)
 		}
-		if page.Body.AtlasDocFormat.Value == in.html {
-			app.logger.Info("Skipped (unchanged)", "title", in.title, "pageID", in.pageID)
-			return &confluence.PublishResult{
-				PageID: in.pageID,
-				// Sem a URL, o segundo pass cai no fallback viewpage.action
-				// para qualquer link que aponte para esta página.
-				PageURL:  page.Links.Base + page.Links.WebUI,
-				Title:    in.title,
-				SpaceKey: app.space,
-				Action:   "skipped",
-				Version:  page.Version.Number,
-			}, nil
+		if serverBodyUnchanged(page.Body.AtlasDocFormat.Value, in.html) {
+			return app.skippedResult(page, in.title), nil
 		}
 		result, err := client.UpdatePage(in.pageID, in.title, in.html, page.Version.Number)
 		if err != nil {
@@ -380,6 +378,9 @@ func (app *appEnv) publishOrSkipServer(client *confluence.ServerClient, in publi
 			page = nil
 		}
 		if page != nil {
+			if serverBodyUnchanged(page.Body.AtlasDocFormat.Value, in.html) {
+				return app.skippedResult(page, in.title), nil
+			}
 			if err := app.moveIfNeededServer(client, page.ID, page.ParentID, in.parentID); err != nil {
 				return nil, err
 			}

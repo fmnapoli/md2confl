@@ -76,26 +76,16 @@ func renderMermaidInMarkdown(source []byte) ([]byte, []string, error) {
 	return modified, svgPaths, nil
 }
 
-// uploadAndPatchImagesServer faz upload de imagens locais e substitui referências no HTML.
-// Retorna o HTML atualizado.
-func uploadAndPatchImagesServer(client *confluence.ServerClient, pageID, storageHTML string, svgPaths []string, logger interface{ Info(string, ...any) }) (string, error) {
-	if len(svgPaths) == 0 {
-		return storageHTML, nil
-	}
-
-	// Upload SVGs como attachments
-	for _, svgPath := range svgPaths {
-		if _, err := os.Stat(svgPath); err != nil {
-			continue
-		}
-		_, err := client.UploadAttachment(pageID, svgPath)
-		if err != nil {
-			logger.Info("Warning: failed to upload mermaid SVG", "path", svgPath, "error", err)
-			continue
-		}
-	}
-
-	// Substituir <img src="local-path"> por <ac:image><ri:attachment ri:filename="..."/></ac:image>
+// patchMermaidRefs substitui <img src="local-path"> pelas referências de
+// attachment do Confluence. É uma transformação pura: só depende do HTML e dos
+// paths dos SVGs, então pode rodar antes de publicar.
+//
+// Rodar antes importa para a idempotência: o path local vive num diretório
+// temporário com nome aleatório, enquanto o nome do arquivo é derivado do
+// conteúdo do diagrama. Publicar o HTML já com a referência de attachment
+// mantém o corpo estável entre execuções — e dispensa a segunda publicação que
+// existia só para trocar as referências depois do upload.
+func patchMermaidRefs(storageHTML string, svgPaths []string) string {
 	patched := storageHTML
 	for _, svgPath := range svgPaths {
 		filename := filepath.Base(svgPath)
@@ -110,6 +100,20 @@ func uploadAndPatchImagesServer(client *confluence.ServerClient, pageID, storage
 			patched = strings.Replace(patched, oldImgPattern+" />", newImg+">", 1)
 		}
 	}
+	return patched
+}
 
-	return patched, nil
+// uploadMermaidAttachments faz upload dos SVGs renderizados como attachments da
+// página. O upload roda mesmo quando o corpo é pulado por já estar publicado:
+// o attachment pode ter falhado numa execução anterior e o corpo, idêntico,
+// nunca mais seria republicado para consertá-lo.
+func uploadMermaidAttachments(client *confluence.ServerClient, pageID string, svgPaths []string, logger interface{ Info(string, ...any) }) {
+	for _, svgPath := range svgPaths {
+		if _, err := os.Stat(svgPath); err != nil {
+			continue
+		}
+		if _, err := client.UploadAttachment(pageID, svgPath); err != nil {
+			logger.Info("Warning: failed to upload mermaid SVG", "path", svgPath, "error", err)
+		}
+	}
 }
