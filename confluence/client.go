@@ -263,7 +263,25 @@ type PageResponse struct {
 		WebUI string `json:"webui"`
 		Base  string `json:"base"`
 	} `json:"_links"`
+	// Property carries the content property requested via
+	// GetPageWithProperty. Zero value means the page has no such property.
+	Property ContentProperty
 }
+
+// ContentProperty is a key-value entry stored against a page, outside of its
+// body. Confluence rewrites the body it is given (it strips HTML comments,
+// injects ac:macro-id, escapes non-ASCII), so a property is the only place
+// where a tool can leave metadata and read it back unchanged.
+type ContentProperty struct {
+	Key     string          `json:"key"`
+	Value   json.RawMessage `json:"value"`
+	Version struct {
+		Number int `json:"number"`
+	} `json:"version"`
+}
+
+// Exists reports whether the property was found on the page.
+func (p ContentProperty) Exists() bool { return len(p.Value) > 0 }
 
 // pagesResponse represents the API response for page list queries.
 type pagesResponse struct {
