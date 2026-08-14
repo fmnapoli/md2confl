@@ -88,15 +88,26 @@ A comparação é entre o ADF publicado (via API) e o ADF recém-gerado, após n
 
 ### Server/DC (Storage Format)
 
-Comparar o HTML recém-gerado com o corpo publicado não funciona aqui: o corpo publicado passou pelo **second pass**, que troca os links relativos `*.md` por URLs do Confluence, enquanto o HTML recém-gerado ainda tem os links crus. Os dois nunca coincidem — e a consequência era republicar toda página em toda execução.
+Comparar o HTML recém-gerado com o corpo publicado **não funciona** aqui, por dois motivos independentes:
 
-Por isso o corpo publicado carrega um marcador com o digest da fonte que o gerou:
+1. O corpo publicado passou pelo **second pass**, que troca os links relativos `*.md` por URLs do Confluence, enquanto o HTML recém-gerado ainda tem os links crus.
+2. O Confluence Server **reescreve o Storage Format que recebe**. Medido contra o TDN em ago/2026, comparando o corpo devolvido pela API com o HTML que a ferramenta enviou:
+   - comentários HTML são descartados por inteiro;
+   - macros ganham `ac:schema-version` e um `ac:macro-id` (UUID gerado no servidor — não há como reproduzi-lo localmente);
+   - caracteres não-ASCII viram entidades (`Operações` → `Opera&ccedil;&otilde;es`), o que atinge praticamente toda página em pt-br.
 
-```html
-<!-- md2confl-source: 3f7a...c1 -->
+Ou seja: o corpo publicado nunca é byte a byte igual ao gerado, com ou sem links. A consequência era republicar toda página em toda execução.
+
+Por isso o digest da fonte fica numa **content property** da página, fora do corpo:
+
+```json
+GET /rest/api/content/{id}/property/md2conflSource
+{ "value": { "digest": "791057e9…" } }
 ```
 
-O digest cobre o título e o Storage Format gerado a partir do Markdown, **antes** da resolução de links. A comparação passa a ser fonte contra fonte, imune à reescrita de links. O marcador é um comentário HTML: não é renderizado, sobrevive à reescrita de `href` e não custa chamada de API extra.
+O digest cobre o título e o Storage Format gerado a partir do Markdown, **antes** da resolução de links. A comparação passa a ser fonte contra fonte. A property é lida junto com a página (`expand=metadata.properties.md2conflSource`, sem request extra), gravar não incrementa a versão da página, e a chave precisa ser alfanumérica — com hífen o Server responde HTTP 500 nesse expand.
+
+> A property é sempre gravada **depois** de a escrita do corpo dar certo. O contrário deixaria uma página com digest novo e corpo velho, que a execução seguinte pularia.
 
 Consequências práticas:
 
@@ -104,11 +115,13 @@ Consequências práticas:
 |----------|--------------|
 | Markdown, título ou conversor mudaram | Página republicada |
 | Só a resolução de links difere | Página pulada (o second pass já cuidou dela) |
-| Página sem o marcador (publicada por versão anterior) | Comparação byte a byte, como antes — republica uma vez e passa a ter o marcador |
-| Confluence descarta o comentário | Volta ao comportamento antigo: republica à toa, nunca pula página alterada |
+| Página sem a property (publicada por versão anterior) | Comparação byte a byte, como antes — republica uma vez e passa a ter a property |
+| Instância não guarda a property | Volta ao comportamento antigo (republica à toa, nunca pula página alterada) **e a execução avisa** |
 | Página editada à mão no Confluence | **Não** é revertida enquanto o Markdown não mudar |
 
-O second pass também virou idempotente: ele compara o HTML com os links resolvidos contra o corpo publicado e só escreve quando há diferença de fato. Como ele reconstrói o corpo canônico a partir do HTML pré-resolução, ainda corrige uma página cujo link precisa apontar para outro endereço (por exemplo quando a página de destino é renomeada e muda de URL), mesmo que o first pass a tenha pulado.
+A cada execução, a primeira gravação de digest é relida para confirmar que o servidor guardou o valor. Se não guardou, sai um aviso nomeando a content property — sem ele o sintoma seria indistinguível de "nada mudou".
+
+O second pass também virou idempotente. Ele não compara corpos (pelo motivo 2 acima): compara os **valores de `href`** do corpo publicado com os do corpo que ele produziria agora, que é exatamente a pergunta que lhe cabe e a única parte do documento que atravessa o sanitizador intacta. Com isso ele não reescreve nada quando os links já estão resolvidos, mas ainda corrige a página quando o link precisa apontar para outro endereço (a página de destino foi renomeada e mudou de URL) ou quando uma execução interrompida deixou links crus no corpo.
 
 ## Retry automático
 
