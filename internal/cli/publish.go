@@ -372,6 +372,7 @@ func (app *appEnv) handlePublishServer(path string, source []byte, storageHTML s
 		}
 		// Compara conteúdo antes de atualizar (idempotência)
 		if page.Body.AtlasDocFormat.Value == storageHTML {
+			pageURL := page.Links.Base + page.Links.WebUI
 			app.logger.Info("Skipped (unchanged)", "title", title, "pageID", pageID)
 			func() {
 				unlock := app.lockOutput()
@@ -379,12 +380,18 @@ func (app *appEnv) handlePublishServer(path string, source []byte, storageHTML s
 				printResult(app.stdout, Result{
 					Status:   "success",
 					PageID:   pageID,
+					PageURL:  pageURL,
 					Title:    title,
 					SpaceKey: app.space,
 					Action:   "skipped",
 					Version:  page.Version.Number,
 				}, app.jsonOutput)
 			}()
+			// Mesmo pulando a publicação, o resultado precisa entrar em
+			// docResults: sem ele o segundo pass ignora a página e os links
+			// relativos nunca são resolvidos — e como o conteúdo não muda,
+			// a página seguiria pulada (e quebrada) em todas as execuções.
+			app.recordDocResultServer(path, pageID, pageURL, title, storageHTML)
 			return nil
 		}
 		result, err = client.UpdatePage(pageID, title, storageHTML, page.Version.Number)
@@ -474,15 +481,22 @@ func (app *appEnv) handlePublishServer(path string, source []byte, storageHTML s
 	}()
 
 	// Salvar resultado para resolução de links inter-documento (Server mode)
-	if app.docResults != nil {
-		absPath, _ := filepath.Abs(path)
-		app.addDocResult(absPath, &docPublishResult{
-			pageID:    result.PageID,
-			pageURL:   result.PageURL,
-			title:     result.Title,
-			finalHTML: storageHTML,
-		})
-	}
+	app.recordDocResultServer(path, result.PageID, result.PageURL, result.Title, storageHTML)
 
 	return nil
+}
+
+// recordDocResultServer guarda o resultado de publicação de um arquivo único em
+// Server/DC mode para o segundo pass de resolução de links inter-documento.
+func (app *appEnv) recordDocResultServer(path, pageID, pageURL, title, storageHTML string) {
+	if app.docResults == nil {
+		return
+	}
+	absPath, _ := filepath.Abs(path)
+	app.addDocResult(absPath, &docPublishResult{
+		pageID:    pageID,
+		pageURL:   pageURL,
+		title:     title,
+		finalHTML: storageHTML,
+	})
 }

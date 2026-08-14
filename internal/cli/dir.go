@@ -320,7 +320,10 @@ func (app *appEnv) publishOrSkipServer(client *confluence.ServerClient, in publi
 		if page.Body.AtlasDocFormat.Value == in.html {
 			app.logger.Info("Skipped (unchanged)", "title", in.title, "pageID", in.pageID)
 			return &confluence.PublishResult{
-				PageID:   in.pageID,
+				PageID: in.pageID,
+				// Sem a URL, o segundo pass cai no fallback viewpage.action
+				// para qualquer link que aponte para esta página.
+				PageURL:  page.Links.Base + page.Links.WebUI,
 				Title:    in.title,
 				SpaceKey: app.space,
 				Action:   "skipped",
