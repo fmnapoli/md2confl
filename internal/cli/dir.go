@@ -260,6 +260,10 @@ func (app *appEnv) publishDirTreeServer(client *confluence.ServerClient, parentI
 						*childResult = *updated
 					}
 				}
+				// O segundo pass republica o finalHTML com os links
+				// resolvidos; sem esta atualização ele reenviaria o HTML
+				// anterior ao patch, apagando as referências de attachment.
+				html = patchedHTML
 			}
 		}
 
@@ -320,7 +324,10 @@ func (app *appEnv) publishOrSkipServer(client *confluence.ServerClient, in publi
 		if page.Body.AtlasDocFormat.Value == in.html {
 			app.logger.Info("Skipped (unchanged)", "title", in.title, "pageID", in.pageID)
 			return &confluence.PublishResult{
-				PageID:   in.pageID,
+				PageID: in.pageID,
+				// Sem a URL, o segundo pass cai no fallback viewpage.action
+				// para qualquer link que aponte para esta página.
+				PageURL:  page.Links.Base + page.Links.WebUI,
 				Title:    in.title,
 				SpaceKey: app.space,
 				Action:   "skipped",
@@ -390,13 +397,7 @@ func (app *appEnv) moveIfNeededServer(client *confluence.ServerClient, pageID, c
 // resolveInterDocLinksServer substitui links relativos *.md no Storage Format HTML
 // por URLs absolutas do Confluence usando os page-ids coletados no primeiro pass.
 func (app *appEnv) resolveInterDocLinksServer(client *confluence.ServerClient) error {
-	// Construir mapa: abs path do .md → URL da página Confluence
-	linkMap := make(map[string]string, len(app.docResults))
-	for absPath, res := range app.docResults {
-		linkMap[absPath] = res.pageURL
-	}
-
-	baseURL := strings.TrimRight(app.url, "/")
+	linkMap := app.serverLinkMap()
 
 	for absPath, res := range app.docResults {
 		if res.finalHTML == "" {
@@ -404,38 +405,8 @@ func (app *appEnv) resolveInterDocLinksServer(client *confluence.ServerClient) e
 		}
 
 		baseDir := filepath.Dir(absPath)
-		patchedHTML := res.finalHTML
-		count := 0
-
-		// Substituir href="*.md" e href="subdir/*.md" por links Confluence
-		// Regex: href="([^"]*\.md)"
-		for targetPath, targetRes := range app.docResults {
-			// Compute relative path from current doc to target
-			relPath, err := filepath.Rel(baseDir, targetPath)
-			if err != nil {
-				continue
-			}
-
-			// Procurar href="relPath" no HTML
-			oldHref := fmt.Sprintf("href=\"%s\"", relPath)
-			if !strings.Contains(patchedHTML, oldHref) {
-				continue
-			}
-
-			// Gerar URL Confluence para o target
-			var newURL string
-			if targetRes.pageURL != "" {
-				newURL = targetRes.pageURL
-			} else {
-				newURL = fmt.Sprintf("%s/pages/viewpage.action?pageId=%s", baseURL, targetRes.pageID)
-			}
-
-			newHref := fmt.Sprintf("href=\"%s\"", newURL)
-			patchedHTML = strings.ReplaceAll(patchedHTML, oldHref, newHref)
-			count++
-		}
-
-		if count == 0 {
+		patchedHTML, count := patchStorageLinks(res.finalHTML, baseDir, linkMap, app.repoURL, app.repoRoot)
+		if count == 0 || patchedHTML == res.finalHTML {
 			continue
 		}
 
@@ -450,6 +421,9 @@ func (app *appEnv) resolveInterDocLinksServer(client *confluence.ServerClient) e
 			app.logger.Warn("Could not update page with resolved links", "pageID", res.pageID, "error", err)
 			continue
 		}
+
+		// Mantém finalHTML alinhado ao que está publicado.
+		res.finalHTML = patchedHTML
 
 		app.logger.Info("Resolved inter-document links", "count", count, "file", filepath.Base(absPath))
 	}

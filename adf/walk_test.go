@@ -3,7 +3,10 @@
 
 package adf
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestIsLocalPath(t *testing.T) {
 	tests := []struct {
@@ -91,7 +94,7 @@ func TestPatchLocalImages(t *testing.T) {
 func TestPatchDocLinks(t *testing.T) {
 	linkMap := map[string]string{
 		"/docs/instalacao.md": "https://site.atlassian.net/wiki/spaces/DEV/pages/123/Instalacao",
-		"/docs/ci-cd.md":     "https://site.atlassian.net/wiki/spaces/DEV/pages/456/CI-CD",
+		"/docs/ci-cd.md":      "https://site.atlassian.net/wiki/spaces/DEV/pages/456/CI-CD",
 	}
 
 	tests := []struct {
@@ -606,5 +609,64 @@ func TestRepoURLNormalization(t *testing.T) {
 	href := doc.Content[0].Content[0].Marks[0].Attrs["href"].(string)
 	if href != "https://github.com/user/repo/blob/main/LICENSE" {
 		t.Errorf("expected correct URL, got %q", href)
+	}
+}
+
+func TestResolveHref(t *testing.T) {
+	base := filepath.Join(string(filepath.Separator), "repo", "docs")
+	linkMap := map[string]string{
+		filepath.Join(string(filepath.Separator), "repo", "docs", "guide.md"): "https://wiki/pages/Guide",
+		filepath.Join(string(filepath.Separator), "repo", "README.md"):        "https://wiki/pages/Readme",
+	}
+	repoURL := "https://github.com/acme/repo/blob/main/"
+	repoRoot := filepath.Join(string(filepath.Separator), "repo")
+
+	tests := []struct {
+		name  string
+		href  string
+		want  string
+		found bool
+	}{
+		{"plain relative link", "guide.md", "https://wiki/pages/Guide", true},
+		{"dot slash prefix", "./guide.md", "https://wiki/pages/Guide", true},
+		{"parent directory", "../README.md", "https://wiki/pages/Readme", true},
+		{"fragment is reattached", "guide.md#setup", "https://wiki/pages/Guide#setup", true},
+		{"dot slash with fragment", "./guide.md#setup", "https://wiki/pages/Guide#setup", true},
+		{"unpublished target falls back to repo", "../Makefile", repoURL + "Makefile", true},
+		{"fallback keeps fragment", "../Makefile#build", repoURL + "Makefile#build", true},
+		{"outside repo root is not resolved", "../../elsewhere/file.txt", "", false},
+		{"absolute http is skipped", "https://example.com/a.md", "", false},
+		{"protocol relative is skipped", "//example.com/a.md", "", false},
+		{"mailto is skipped", "mailto:dev@example.com", "", false},
+		{"tel is skipped", "tel:+5511999999999", "", false},
+		{"bare fragment is skipped", "#section", "", false},
+		{"empty href is skipped", "", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, found := ResolveHref(tt.href, base, linkMap, repoURL, repoRoot)
+			if found != tt.found {
+				t.Fatalf("found = %v, want %v (got %q)", found, tt.found, got)
+			}
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveHref_NoRepoFallback(t *testing.T) {
+	base := filepath.Join(string(filepath.Separator), "repo")
+	if _, found := ResolveHref("Makefile", base, map[string]string{}, "", ""); found {
+		t.Error("expected no resolution without repoURL/repoRoot")
+	}
+}
+
+func TestResolveHref_EmptyPageURLIsNotResolved(t *testing.T) {
+	base := filepath.Join(string(filepath.Separator), "repo")
+	linkMap := map[string]string{filepath.Join(base, "guide.md"): ""}
+	if got, found := ResolveHref("guide.md", base, linkMap, "", ""); found {
+		t.Errorf("expected no resolution for empty page URL, got %q", got)
 	}
 }
