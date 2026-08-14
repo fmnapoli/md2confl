@@ -83,7 +83,7 @@ func (c *converter) renderBlock(node adf.Node, depth int) {
 	case "expand":
 		c.renderExpand(node)
 	default:
-		c.buf.WriteString(fmt.Sprintf("<!-- unsupported: %s -->\n\n", node.Type))
+		fmt.Fprintf(&c.buf, "<!-- unsupported: %s -->\n\n", node.Type)
 	}
 }
 
@@ -333,7 +333,7 @@ func (c *converter) renderMediaSingle(node adf.Node) {
 					alt = s
 				}
 			}
-			c.buf.WriteString(fmt.Sprintf("![%s](%s)\n\n", alt, url))
+			fmt.Fprintf(&c.buf, "![%s](%s)\n\n", alt, url)
 			return
 		}
 	}
