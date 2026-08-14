@@ -50,10 +50,11 @@ O fluxo para Mermaid em Server/DC:
 2. Renderiza cada bloco para SVG via `mmdc`
 3. Substitui o bloco por referência de imagem no Markdown
 4. Converte Markdown → Storage Format (XHTML)
-5. Publica a página
-6. Upload dos SVGs como attachments
-7. Patch do HTML: `<img>` local → `<ac:image><ri:attachment ri:filename="..."/></ac:image>`
-8. Re-publica com referências de attachment
+5. Patch do HTML: `<img>` local → `<ac:image><ri:attachment ri:filename="..."/></ac:image>`
+6. Publica a página já com as referências de attachment
+7. Upload dos SVGs como attachments
+
+O patch acontece **antes** de publicar porque o path local do SVG vive num diretório temporário de nome aleatório, enquanto o nome do arquivo é derivado do conteúdo do diagrama. Publicar o HTML já com a referência de attachment mantém o corpo estável entre execuções (ver [skip de páginas inalteradas](publicacao.md#skip-de-páginas-inalteradas)) e dispensa a segunda publicação que existia só para trocar as referências depois do upload.
 
 ### Custom User-Agent
 

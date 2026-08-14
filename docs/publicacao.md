@@ -74,13 +74,41 @@ graph TD
 
 ## Skip de páginas inalteradas
 
-Antes de atualizar uma página existente, o md2confl compara o ADF atual (via API) com o novo ADF gerado. Se o conteúdo é idêntico (após normalização JSON), a atualização é ignorada:
+Antes de atualizar uma página existente, o md2confl verifica se o conteúdo publicado já corresponde à fonte local. Em caso positivo a atualização é ignorada:
 
 ```
 - Skipped "Quick Start" (unchanged)
 ```
 
 Isso reduz chamadas à API e evita incrementar a versão da página desnecessariamente.
+
+### Cloud (ADF)
+
+A comparação é entre o ADF publicado (via API) e o ADF recém-gerado, após normalização JSON.
+
+### Server/DC (Storage Format)
+
+Comparar o HTML recém-gerado com o corpo publicado não funciona aqui: o corpo publicado passou pelo **second pass**, que troca os links relativos `*.md` por URLs do Confluence, enquanto o HTML recém-gerado ainda tem os links crus. Os dois nunca coincidem — e a consequência era republicar toda página em toda execução.
+
+Por isso o corpo publicado carrega um marcador com o digest da fonte que o gerou:
+
+```html
+<!-- md2confl-source: 3f7a...c1 -->
+```
+
+O digest cobre o título e o Storage Format gerado a partir do Markdown, **antes** da resolução de links. A comparação passa a ser fonte contra fonte, imune à reescrita de links. O marcador é um comentário HTML: não é renderizado, sobrevive à reescrita de `href` e não custa chamada de API extra.
+
+Consequências práticas:
+
+| Situação | Comportamento |
+|----------|--------------|
+| Markdown, título ou conversor mudaram | Página republicada |
+| Só a resolução de links difere | Página pulada (o second pass já cuidou dela) |
+| Página sem o marcador (publicada por versão anterior) | Comparação byte a byte, como antes — republica uma vez e passa a ter o marcador |
+| Confluence descarta o comentário | Volta ao comportamento antigo: republica à toa, nunca pula página alterada |
+| Página editada à mão no Confluence | **Não** é revertida enquanto o Markdown não mudar |
+
+O second pass também virou idempotente: ele compara o HTML com os links resolvidos contra o corpo publicado e só escreve quando há diferença de fato. Como ele reconstrói o corpo canônico a partir do HTML pré-resolução, ainda corrige uma página cujo link precisa apontar para outro endereço (por exemplo quando a página de destino é renomeada e muda de URL), mesmo que o first pass a tenha pulado.
 
 ## Retry automático
 
