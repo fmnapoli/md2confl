@@ -102,7 +102,14 @@ func (c *Client) doRequest(req *http.Request) (*http.Response, error) {
 // isRetryable returns true if the response should be retried.
 // Retries on 429 (rate limit), 5xx (server error), and any response with
 // HTML content type (CDN/proxy errors like CloudFront 400).
+//
+// 403 is never retried, even when the body is an HTML error page: it is an
+// authorization decision (token, space permission or a WAF rule), not a
+// transient failure, so retrying only adds latency to every request.
 func isRetryable(resp *http.Response) bool {
+	if resp.StatusCode == 403 {
+		return false
+	}
 	if resp.StatusCode == 429 || resp.StatusCode >= 500 {
 		return true
 	}
@@ -405,6 +412,9 @@ func (c *Client) FindByTitle(spaceID, title string) (*PageResponse, error) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == 403 {
+		return nil, searchBlockedError(spaceID, title)
+	}
 	if resp.StatusCode != 200 {
 		return nil, c.handleErrorResponse(resp)
 	}

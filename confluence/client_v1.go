@@ -267,6 +267,11 @@ func (c *ServerClient) FindByTitle(spaceKey, title string) (*PageResponse, error
 	}
 	defer resp.Body.Close()
 
+	// 403 aqui é o caso do WAF/proxy que bloqueia a busca por título mesmo
+	// com o acesso por ID liberado — mensagem dedicada, sem retry.
+	if resp.StatusCode == 403 {
+		return nil, searchBlockedError(spaceKey, title)
+	}
 	if resp.StatusCode != 200 {
 		return nil, c.handleErrorResponse(resp)
 	}

@@ -12,6 +12,7 @@ const (
 	ErrCategoryConflict   = "conflict"
 	ErrCategoryValidation = "validation"
 	ErrCategoryNetwork    = "network"
+	ErrCategoryBlocked    = "blocked"
 )
 
 // APIError represents a categorized Confluence API error.
@@ -55,6 +56,26 @@ func conflictError() *APIError {
 		StatusCode: 409,
 		Message:    "version conflict — page was updated concurrently",
 		Hint:       "retry the operation",
+	}
+}
+
+// searchBlockedError reports a title search rejected with HTTP 403.
+//
+// A generic 403 is reported as an auth error (or, when the proxy answers with
+// an HTML page, as a transient CDN error), and both are misleading here: the
+// search endpoint is commonly blocked by the WAF/proxy sitting in front of
+// Confluence while access by page ID keeps working. Retrying does not help,
+// and the search result is ambiguous — the page may well exist — so callers
+// must fail instead of falling through to page creation.
+func searchBlockedError(spaceKey, title string) *APIError {
+	return &APIError{
+		Category:   ErrCategoryBlocked,
+		StatusCode: 403,
+		Message: fmt.Sprintf("title search rejected with HTTP 403 (space %q, title %q) — "+
+			"the search endpoint is blocked by the proxy/WAF in front of Confluence, "+
+			"or the account cannot read this space", spaceKey, title),
+		Hint: "not transient — retrying will not help; add a <!-- confluence-page-id: N --> " +
+			"marker to the document so it is published by ID instead of by title search",
 	}
 }
 
