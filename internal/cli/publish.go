@@ -366,9 +366,9 @@ func (app *appEnv) handlePublishServer(path string, source []byte, storageHTML s
 
 	title := deriveTitle(app.title, path, source)
 
-	// O corpo publicado já sai com as referências de attachment dos diagramas e
-	// com o marcador do digest da fonte — é o que a comparação de idempotência
-	// e o segundo pass de links usam como base.
+	// O corpo publicado já sai com as referências de attachment dos SVGs e com
+	// o marcador do digest da fonte — é o que a comparação de idempotência e o
+	// segundo pass de links usam como base.
 	storageHTML = stampSourceMarker(title, patchMermaidRefs(storageHTML, svgPaths))
 
 	result, err := app.publishOrSkipServer(client, publishServerInput{
