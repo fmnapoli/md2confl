@@ -1,6 +1,6 @@
 module github.com/fmnapoli/md2confl
 
-go 1.25.5
+go 1.26.0
 
 require github.com/yuin/goldmark v1.7.17
 
