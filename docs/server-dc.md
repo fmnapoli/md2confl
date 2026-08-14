@@ -75,6 +75,33 @@ user-agent: meu-bot
 server: true
 ```
 
+### WAF bloqueando a busca por título (HTTP 403)
+
+Alguns proxies liberam o acesso por page ID mas bloqueiam o endpoint de busca
+(`GET /rest/api/content?spaceKey=...&title=...`). O sintoma é um 403 só nos
+documentos **sem** o marcador `<!-- confluence-page-id: N -->`, que são
+justamente os que dependem da busca quando `--force` está ativo:
+
+```
+1 document(s) failed:
+  - docs/guia.md: title search rejected with HTTP 403 (space "DEVOPS", title "Guia") — ...
+      Hint: not transient — retrying will not help; add a <!-- confluence-page-id: N --> marker ...
+```
+
+Não é transiente e não adianta repetir: o 403 não é retentado. O md2confl
+também **não** trata o bloqueio como "página não encontrada" — isso faria o
+`--force` criar uma página nova a cada execução, duplicando o documento.
+
+Saídas possíveis:
+
+- Adicionar o marcador `<!-- confluence-page-id: N -->` ao documento (via
+  `--write-marker` numa execução em que a busca funcione, ou copiando o ID da
+  URL da página), que passa a ser publicado por ID.
+- Ajustar o User-Agent (ver acima) ou a regra do WAF.
+
+Os demais documentos seguem sendo publicados normalmente; só os bloqueados são
+pulados, e o processo termina com exit code 2.
+
 ## Importar do Server/DC (pull)
 
 O subcomando `pull` com `--server` busca uma página do Confluence Server/DC e converte Storage Format (XHTML) para Markdown.

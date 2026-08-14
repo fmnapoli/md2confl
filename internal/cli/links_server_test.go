@@ -34,6 +34,10 @@ type fakeConfluenceServer struct {
 	pages   map[string]*fakeServerPage
 	counter int
 	baseURL string
+
+	// searchHandler, when set, replaces the find-by-title endpoint. Tests use
+	// it to emulate a WAF/proxy blocking GET /rest/api/content with 403.
+	searchHandler http.HandlerFunc
 }
 
 func newFakeConfluenceServer(t *testing.T) (*httptest.Server, *fakeConfluenceServer) {
@@ -83,6 +87,10 @@ func (f *fakeConfluenceServer) handle(w http.ResponseWriter, r *http.Request) {
 
 	// FindByTitle
 	case r.Method == http.MethodGet && r.URL.Path == "/rest/api/content":
+		if f.searchHandler != nil {
+			f.searchHandler(w, r)
+			return
+		}
 		title := r.URL.Query().Get("title")
 		results := []map[string]any{}
 		if p := f.pageByTitle(title); p != nil {

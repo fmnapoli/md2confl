@@ -37,9 +37,28 @@ func (d *DirEntry) hasMarkdown() bool {
 	return false
 }
 
+// docPath identifica a página do diretório nos relatórios de falha: o README
+// quando existe, senão o próprio diretório (que vira uma página só com o nome).
+func (d *DirEntry) docPath() string {
+	if d.Readme != nil {
+		return d.Readme.Path
+	}
+	return d.Path
+}
+
 type mdFile struct {
 	Path    string
 	Content []byte
+}
+
+// recordDirFailure registra a falha da página de um diretório. Sem ela não há
+// parent para as filhas, então a subárvore inteira é pulada — o aviso deixa
+// isso explícito no log, já que só o README aparece no resumo de falhas.
+func (app *appEnv) recordDirFailure(tree *DirEntry, err error) {
+	app.recordDocFailure(tree.docPath(), err)
+	if len(tree.Files) > 0 || len(tree.Children) > 0 {
+		app.logger.Warn("Skipping subtree — the directory page failed", "dir", tree.Path)
+	}
 }
 
 func (app *appEnv) runDir() error {
@@ -154,7 +173,8 @@ func (app *appEnv) publishDirTreeServer(client *confluence.ServerClient, parentI
 
 		modifiedSource, svgPaths, err := renderMermaidInMarkdown(tree.Readme.Content)
 		if err != nil {
-			return fmt.Errorf("rendering mermaid in %q: %w", pagePath, err)
+			app.recordDirFailure(tree, fmt.Errorf("rendering mermaid: %w", err))
+			return nil
 		}
 		if len(svgPaths) > 0 {
 			app.logger.Info("Rendered mermaid diagrams", "count", len(svgPaths), "file", pagePath)
@@ -162,7 +182,8 @@ func (app *appEnv) publishDirTreeServer(client *confluence.ServerClient, parentI
 
 		html, err := parser.ConvertToStorageFormat(modifiedSource)
 		if err != nil {
-			return fmt.Errorf("converting %q to storage format: %w", pagePath, err)
+			app.recordDirFailure(tree, fmt.Errorf("converting to storage format: %w", err))
+			return nil
 		}
 		storageHTML = html
 		_ = svgPaths // upload de SVGs tratado após publicação
@@ -190,7 +211,8 @@ func (app *appEnv) publishDirTreeServer(client *confluence.ServerClient, parentI
 		inputPath: pagePath,
 	})
 	if err != nil {
-		return err
+		app.recordDirFailure(tree, err)
+		return nil
 	}
 
 	func() {
@@ -219,11 +241,14 @@ func (app *appEnv) publishDirTreeServer(client *confluence.ServerClient, parentI
 		})
 	}
 
-	// Publicar demais arquivos markdown como subpáginas
+	// Publicar demais arquivos markdown como subpáginas.
+	// Cada arquivo é isolado: uma falha é registrada e o laço segue para os
+	// próximos — o segundo pass de links roda com o que deu certo.
 	for _, f := range tree.Files {
 		modifiedSource, svgPaths, err := renderMermaidInMarkdown(f.Content)
 		if err != nil {
-			return fmt.Errorf("rendering mermaid in %q: %w", f.Path, err)
+			app.recordDocFailure(f.Path, fmt.Errorf("rendering mermaid: %w", err))
+			continue
 		}
 		if len(svgPaths) > 0 {
 			app.logger.Info("Rendered mermaid diagrams", "count", len(svgPaths), "file", f.Path)
@@ -231,7 +256,8 @@ func (app *appEnv) publishDirTreeServer(client *confluence.ServerClient, parentI
 
 		html, err := parser.ConvertToStorageFormat(modifiedSource)
 		if err != nil {
-			return fmt.Errorf("converting %q to storage format: %w", f.Path, err)
+			app.recordDocFailure(f.Path, fmt.Errorf("converting to storage format: %w", err))
+			continue
 		}
 		childTitle := titleFromSource(f.Content, strings.TrimSuffix(filepath.Base(f.Path), ".md"))
 
@@ -243,7 +269,8 @@ func (app *appEnv) publishDirTreeServer(client *confluence.ServerClient, parentI
 			inputPath: f.Path,
 		})
 		if err != nil {
-			return err
+			app.recordDocFailure(f.Path, err)
+			continue
 		}
 
 		// Upload de SVGs mermaid
@@ -512,19 +539,22 @@ func (app *appEnv) publishDirTree(client *confluence.Client, spaceID, parentID s
 		pageSource = tree.Readme.Content
 		doc, err := parser.ConvertToADF(tree.Readme.Content)
 		if err != nil {
-			return fmt.Errorf("converting %q: %w", pagePath, err)
+			app.recordDirFailure(tree, fmt.Errorf("converting to ADF: %w", err))
+			return nil
 		}
 		pageDoc = doc
 		rendered, merr := renderMermaidBlocks(doc)
 		if merr != nil {
-			return merr
+			app.recordDirFailure(tree, fmt.Errorf("rendering mermaid: %w", merr))
+			return nil
 		}
 		if rendered {
 			app.logger.Info("Rendered mermaid diagrams", "count", countMermaidSVGs(doc), "file", pagePath)
 		}
 		adfJSON, err := json.MarshalIndent(doc, "", "  ")
 		if err != nil {
-			return fmt.Errorf("marshaling ADF: %w", err)
+			app.recordDirFailure(tree, fmt.Errorf("marshaling ADF: %w", err))
+			return nil
 		}
 		pageContent = adfJSON
 	} else {
@@ -558,13 +588,15 @@ func (app *appEnv) publishDirTree(client *confluence.Client, spaceID, parentID s
 		inputPath: pagePath,
 	})
 	if err != nil {
-		return err
+		app.recordDirFailure(tree, err)
+		return nil
 	}
 
 	// Upload local images (including mermaid SVGs) for README
 	if pageDoc != nil {
 		if err := app.uploadAndPatchImages(client, pageDoc, dirResult, filepath.Dir(pagePath)); err != nil {
-			return err
+			app.recordDirFailure(tree, err)
+			return nil
 		}
 	}
 
@@ -595,22 +627,27 @@ func (app *appEnv) publishDirTree(client *confluence.Client, spaceID, parentID s
 		}
 	}
 
-	// Publish other markdown files as children
+	// Publish other markdown files as children. Each file is isolated: a
+	// failure is recorded and skipped so the remaining files — and the second
+	// pass that resolves inter-document links — still go through.
 	for _, f := range tree.Files {
 		doc, err := parser.ConvertToADF(f.Content)
 		if err != nil {
-			return fmt.Errorf("converting %q: %w", f.Path, err)
+			app.recordDocFailure(f.Path, fmt.Errorf("converting to ADF: %w", err))
+			continue
 		}
 		rendered, merr := renderMermaidBlocks(doc)
 		if merr != nil {
-			return merr
+			app.recordDocFailure(f.Path, fmt.Errorf("rendering mermaid: %w", merr))
+			continue
 		}
 		if rendered {
 			app.logger.Info("Rendered mermaid diagrams", "count", countMermaidSVGs(doc), "file", f.Path)
 		}
 		adfJSON, err := json.MarshalIndent(doc, "", "  ")
 		if err != nil {
-			return fmt.Errorf("marshaling ADF: %w", err)
+			app.recordDocFailure(f.Path, fmt.Errorf("marshaling ADF: %w", err))
+			continue
 		}
 		childTitle := titleFromSource(f.Content, strings.TrimSuffix(filepath.Base(f.Path), ".md"))
 
@@ -625,7 +662,8 @@ func (app *appEnv) publishDirTree(client *confluence.Client, spaceID, parentID s
 			inputPath: f.Path,
 		})
 		if err != nil {
-			return err
+			app.recordDocFailure(f.Path, err)
+			continue
 		}
 
 		if app.writeMarker && childResult.PageID != "" {
@@ -635,7 +673,8 @@ func (app *appEnv) publishDirTree(client *confluence.Client, spaceID, parentID s
 		}
 
 		if err := app.uploadAndPatchImages(client, doc, childResult, filepath.Dir(f.Path)); err != nil {
-			return err
+			app.recordDocFailure(f.Path, err)
+			continue
 		}
 
 		func() {

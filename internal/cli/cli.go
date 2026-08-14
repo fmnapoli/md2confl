@@ -32,6 +32,15 @@ type docPublishResult struct {
 	finalHTML string // Storage Format HTML (Server/DC mode only)
 }
 
+// docFailure records a document that could not be published. Failures are
+// collected instead of aborting the run, so that the remaining documents — and
+// the second pass that resolves inter-document links, which only runs after
+// every publish — still go through.
+type docFailure struct {
+	path string
+	err  error
+}
+
 type appEnv struct {
 	input          string
 	output         string
@@ -61,6 +70,8 @@ type appEnv struct {
 	docResultsMu   *sync.Mutex
 	warnings       *[]string
 	warningsMu     *sync.Mutex
+	failures       *[]docFailure
+	failuresMu     *sync.Mutex
 
 	version  string
 	stdout   io.Writer
@@ -78,6 +89,7 @@ func Run(args []string, version string, stdout, stderr io.Writer) int {
 	}
 
 	warnings := make([]string, 0)
+	failures := make([]docFailure, 0)
 	outputMu := &sync.Mutex{}
 	app := &appEnv{
 		version:    version,
@@ -86,6 +98,8 @@ func Run(args []string, version string, stdout, stderr io.Writer) int {
 		outputMu:   outputMu,
 		warnings:   &warnings,
 		warningsMu: &sync.Mutex{},
+		failures:   &failures,
+		failuresMu: &sync.Mutex{},
 	}
 
 	if err := app.fromArgs(args); err != nil {
@@ -102,7 +116,15 @@ func Run(args []string, version string, stdout, stderr io.Writer) int {
 	}
 	app.logger = slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: logLevel}))
 
-	if err := app.run(); err != nil {
+	err := app.run()
+	// Documents skipped by per-document isolation must still fail the run:
+	// reporting them only as text would leave the caller (a CI step) green.
+	if err == nil {
+		err = app.failureError()
+	}
+	app.printFailureSummary()
+
+	if err != nil {
 		code := 1
 		var apiErr *apiError
 		if errors.As(err, &apiErr) {
@@ -487,6 +509,76 @@ func (app *appEnv) addWarning(msg string) {
 		defer app.warningsMu.Unlock()
 	}
 	*app.warnings = append(*app.warnings, msg)
+}
+
+// recordDocFailure registers a document that failed and must be skipped
+// (thread-safe). The caller keeps going with the remaining documents; the run
+// as a whole fails at the end via failureError.
+func (app *appEnv) recordDocFailure(path string, err error) {
+	if app.logger != nil {
+		app.logger.Error("Document failed — skipping", "path", path, "error", err)
+	}
+	if app.failures == nil {
+		return
+	}
+	if app.failuresMu != nil {
+		app.failuresMu.Lock()
+		defer app.failuresMu.Unlock()
+	}
+	*app.failures = append(*app.failures, docFailure{path: path, err: err})
+}
+
+// docFailures returns a copy of the failures collected so far (thread-safe).
+func (app *appEnv) docFailures() []docFailure {
+	if app.failures == nil {
+		return nil
+	}
+	if app.failuresMu != nil {
+		app.failuresMu.Lock()
+		defer app.failuresMu.Unlock()
+	}
+	return append([]docFailure(nil), *app.failures...)
+}
+
+// failureError aggregates the collected per-document failures into a single
+// error, or returns nil when every document went through. Its exit code is the
+// highest one among the failures, so a run that only hit API errors still
+// exits 2 and a CI step can tell the difference from a usage error.
+func (app *appEnv) failureError() error {
+	failures := app.docFailures()
+	if len(failures) == 0 {
+		return nil
+	}
+	exitCode := 1
+	for _, f := range failures {
+		var apiErr *apiError
+		if errors.As(f.err, &apiErr) && apiErr.exitCode > exitCode {
+			exitCode = apiErr.exitCode
+		}
+	}
+	return &apiError{
+		message:  fmt.Sprintf("%d document(s) failed and were skipped", len(failures)),
+		hint:     "see the failure summary above; the remaining documents were published",
+		exitCode: exitCode,
+	}
+}
+
+// printFailureSummary prints the documents skipped during the run.
+func (app *appEnv) printFailureSummary() {
+	failures := app.docFailures()
+	if len(failures) == 0 {
+		return
+	}
+	fmt.Fprintf(app.stderr, "\n%d document(s) failed:\n", len(failures))
+	for _, f := range failures {
+		fmt.Fprintf(app.stderr, "  - %s: %v\n", f.path, f.err)
+		// The hint carries the way out (e.g. add a page-id marker); the
+		// aggregated error that follows only reports the count.
+		var apiErr *apiError
+		if errors.As(f.err, &apiErr) && apiErr.hint != "" {
+			fmt.Fprintf(app.stderr, "      Hint: %s\n", apiErr.hint)
+		}
+	}
 }
 
 // addDocResult records a publish result for inter-document link resolution (thread-safe).
