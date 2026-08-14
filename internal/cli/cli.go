@@ -30,6 +30,10 @@ type docPublishResult struct {
 	title     string
 	finalADF  *adf.Document
 	finalHTML string // Storage Format HTML (Server/DC mode only)
+	// linkOnly marca uma página que esta execução não publicou: ela entra em
+	// docResults apenas como destino de link (ver registerLinkTargetsFromConfig)
+	// e não pode ser tocada por nada que percorra os resultados.
+	linkOnly bool
 }
 
 // docFailure records a document that could not be published. Failures are

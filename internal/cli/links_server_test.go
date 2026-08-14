@@ -39,10 +39,11 @@ type fakeProperty struct {
 // API v1 used by ServerClient: find-by-title, create, get and update page, and
 // content properties.
 type fakeConfluenceServer struct {
-	mu      sync.Mutex
-	pages   map[string]*fakeServerPage
-	counter int
-	baseURL string
+	mu         sync.Mutex
+	pages      map[string]*fakeServerPage
+	counter    int
+	macroCount int
+	baseURL    string
 
 	// searchHandler, when set, replaces the find-by-title endpoint. Tests use
 	// it to emulate a WAF/proxy blocking GET /rest/api/content with 403.
@@ -62,6 +63,12 @@ type fakeConfluenceServer struct {
 	// failPropertyDeletes rejects removing a content property, which is what
 	// invalidates the previous digest before the body is rewritten.
 	failPropertyDeletes bool
+
+	// failPropertyGets makes the next N reads of a content property fail with
+	// 403, emulating a one-off error on the read-back that confirms the digest
+	// was persisted. 403 is the one status the client does not retry, so the
+	// failure reaches the caller instead of being absorbed.
+	failPropertyGets int
 }
 
 func newFakeConfluenceServer(t *testing.T) (*httptest.Server, *fakeConfluenceServer) {
@@ -91,9 +98,9 @@ func (f *fakeConfluenceServer) sanitizeStorage(body string) string {
 	body = htmlCommentRegex.ReplaceAllString(body, "")
 	body = macroIDRegex.ReplaceAllStringFunc(body, func(m string) string {
 		sub := macroIDRegex.FindStringSubmatch(m)
-		f.counter++
+		f.macroCount++
 		return fmt.Sprintf(`<ac:structured-macro ac:name=%q ac:schema-version="1" ac:macro-id="fake-%d"`,
-			sub[1], f.counter)
+			sub[1], f.macroCount)
 	})
 	var sb strings.Builder
 	for _, r := range body {
@@ -172,6 +179,11 @@ func (f *fakeConfluenceServer) handleProperty(w http.ResponseWriter, r *http.Req
 
 	switch r.Method {
 	case http.MethodGet:
+		if f.failPropertyGets > 0 {
+			f.failPropertyGets--
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		prop, found := p.Properties[key]
 		if !found {
 			w.WriteHeader(http.StatusNotFound)
@@ -288,7 +300,7 @@ func (f *fakeConfluenceServer) handle(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.counter++
 		p := &fakeServerPage{
-			ID:      fmt.Sprintf("page-%d", f.counter),
+			ID:      fmt.Sprintf("%d", 1050000000+f.counter),
 			Title:   req.Title,
 			Body:    f.sanitizeStorage(req.Body.Storage.Value),
 			Version: 1,

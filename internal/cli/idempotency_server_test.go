@@ -436,3 +436,129 @@ func TestServerPublish_FailedInvalidationKeepsBody(t *testing.T) {
 		t.Errorf("the page was not published once the server recovered\nbody: %s", page.Body)
 	}
 }
+
+// TestServerPublish_DigestVerificationSurvivesTransientError guards the
+// read-back that confirms the server kept the digest. It runs once per run, and
+// a request that happens to fail must not count as "already verified" —
+// otherwise a single transient error silently disables, for the whole run, the
+// check that exists precisely to make silent failures loud.
+func TestServerPublish_DigestVerificationSurvivesTransientError(t *testing.T) {
+	dir := t.TempDir()
+	ts, fake := newFakeConfluenceServer(t)
+	fake.dropProperties = true
+	// A primeira leitura de verificação falha; as seguintes funcionam.
+	fake.failPropertyGets = 1
+	cfgPath := setupConsumerRepo(t, dir, ts.URL, consumerDocs())
+
+	stderr := runPublish(t, cfgPath)
+
+	if !strings.Contains(stderr, "did not keep the md2confl source digest") {
+		t.Errorf("a transient failure on the first check disabled it for the whole run; stderr:\n%s", stderr)
+	}
+}
+
+// serverConfigWithMarkers mirrors the consumer's repository state, where the
+// confluence-page-id markers are committed into the Markdown files.
+func serverConfigWithMarkers(baseURL string) string {
+	return strings.Replace(serverConfig(baseURL), "write-marker: false", "write-marker: true", 1)
+}
+
+// TestServerPublish_ChangedSingleDocumentResolvesLinks covers the hole the
+// review kept open: publishing one document of the config on its own runs no
+// second pass, so a document that CHANGED was published with its raw relative
+// links — the very state of the incident that started all of this.
+//
+// The pages of the documents left out of the run are registered as link targets
+// from their page-id markers, without being published, so the links resolve.
+func TestServerPublish_ChangedSingleDocumentResolvesLinks(t *testing.T) {
+	dir := t.TempDir()
+	ts, fake := newFakeConfluenceServer(t)
+	docs := consumerDocs()
+	cfgPath := writeConfigAndDocs(t, dir, serverConfigWithMarkers(ts.URL), docs)
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	t.Setenv("CONFLUENCE_TOKEN", "fake-token")
+
+	// Execução completa: publica tudo e grava os marcadores nos arquivos.
+	runPublish(t, cfgPath)
+
+	arch := fake.pageByTitle("Arquitetura do TCloud Worker")
+	if arch == nil {
+		t.Fatal("architecture page was not published")
+	}
+	archURL := ts.URL + "/display/TEST/" + arch.ID
+	before := fake.pageVersions()
+
+	// README muda e é publicado sozinho.
+	readmeSource, err := os.ReadFile(filepath.Join(dir, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := string(readmeSource) + "\nA brand new line.\n"
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte(edited), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr strings.Builder
+	if code := Run([]string{"--config", cfgPath, "--input", "README.md"}, "test", &stdout, &stderr); code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr: %s", code, stderr.String())
+	}
+
+	readme := fake.pageByTitle("TCloud Worker")
+	if !strings.Contains(readme.Body, "A brand new line.") {
+		t.Fatalf("the edited content was not published\nbody: %s", readme.Body)
+	}
+	if strings.Contains(readme.Body, `href="docs/`) || strings.Contains(readme.Body, `href="./docs/`) {
+		t.Errorf("the page was published with raw relative links\nbody: %s", readme.Body)
+	}
+	if !strings.Contains(readme.Body, `href="`+archURL+`"`) {
+		t.Errorf("the link to the architecture page was not resolved, want %s\nbody: %s", archURL, readme.Body)
+	}
+
+	// As páginas registradas só como destino de link não podem ser publicadas.
+	after := fake.pageVersions()
+	for _, title := range sortedTitles(before) {
+		if title == "TCloud Worker" {
+			continue
+		}
+		if after[title] != before[title] {
+			t.Errorf("link target %q was republished: version %d → %d", title, before[title], after[title])
+		}
+	}
+}
+
+// TestServerPublish_UnresolvableSingleDocumentWarns is the fallback for the
+// case above: when the documents left out of the run carry no page-id marker,
+// there is nothing to point the links at. The run then has to say that the page
+// went live with relative links instead of leaving it to be discovered in the
+// browser.
+func TestServerPublish_UnresolvableSingleDocumentWarns(t *testing.T) {
+	dir := t.TempDir()
+	ts, _ := newFakeConfluenceServer(t)
+	// serverConfig mantém write-marker: false, então nenhum arquivo ganha marcador.
+	cfgPath := setupConsumerRepo(t, dir, ts.URL, consumerDocs())
+
+	runPublish(t, cfgPath)
+
+	readme, err := os.ReadFile(filepath.Join(dir, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), append(readme, []byte("\nA brand new line.\n")...), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr strings.Builder
+	if code := Run([]string{"--config", cfgPath, "--input", "README.md"}, "test", &stdout, &stderr); code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr: %s", code, stderr.String())
+	}
+
+	if !strings.Contains(stderr.String(), "relative Markdown links") {
+		t.Errorf("the run must warn that the page went live with relative links; stderr:\n%s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "docs/tdn/architecture/architecture.md") {
+		t.Errorf("the warning must name the links; stderr:\n%s", stderr.String())
+	}
+}

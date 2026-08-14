@@ -150,7 +150,7 @@ func (app *appEnv) runDirServer(tree *DirEntry) error {
 	// Approve all published pages via Comala Workflows (after all updates are done)
 	if app.approve {
 		for _, res := range app.docResults {
-			if res.pageID != "" {
+			if res.pageID != "" && !res.linkOnly {
 				if err := client.ApproveWorkflow(res.pageID, "Review"); err != nil {
 					app.logger.Warn("Could not approve page", "pageID", res.pageID, "error", err)
 				}

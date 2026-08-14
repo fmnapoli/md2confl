@@ -210,9 +210,27 @@ func (app *appEnv) runDocuments(inputFilter string) error {
 		return err
 	}
 
+	// Publicar um subconjunto filtrado não pode empurrar links relativos crus
+	// para o Confluence: registra, sem publicar, as páginas dos documentos que
+	// ficaram de fora, para que o segundo pass tenha para onde apontar.
+	if app.serverMode && !app.dryRun && inputFilter != "" {
+		client, err := confluence.NewServerClient(confluence.Config{
+			BaseURL:   app.url,
+			SpaceKey:  app.space,
+			Email:     app.email,
+			Token:     app.token,
+			UserAgent: app.userAgent,
+		})
+		if err == nil {
+			client.SetLogger(app.logger)
+			app.registerLinkTargetsFromConfig(client, filtered)
+		}
+	}
+
 	// Second pass: resolve inter-document links across all published docs
 	// (including files from directory inputs, not just the config entries).
-	if len(app.docResults) > 1 && !app.dryRun {
+	switch {
+	case len(app.docResults) > 1 && !app.dryRun:
 		if app.serverMode {
 			client, err := confluence.NewServerClient(confluence.Config{
 				BaseURL:   app.url,
@@ -232,8 +250,12 @@ func (app *appEnv) runDocuments(inputFilter string) error {
 				return fmt.Errorf("resolving inter-document links: %w", err)
 			}
 		}
-	} else if len(app.docResults) > 1 && app.dryRun {
+	case len(app.docResults) > 1 && app.dryRun:
 		app.previewInterDocLinksFromResults()
+	case !app.dryRun:
+		// Sem segundo pass não há quem resolva os links: se sobrou algum
+		// relativo, o corpo publicado ficou com ele.
+		app.warnUnresolvedMarkdownLinks()
 	}
 
 	// Approve all published pages via Comala Workflows (after all updates are done)
@@ -248,7 +270,7 @@ func (app *appEnv) runDocuments(inputFilter string) error {
 		if err == nil {
 			client.SetLogger(app.logger)
 			for _, res := range app.docResults {
-				if res.pageID != "" {
+				if res.pageID != "" && !res.linkOnly {
 					if err := client.ApproveWorkflow(res.pageID, "Review"); err != nil {
 						app.logger.Warn("Could not approve page", "pageID", res.pageID, "error", err)
 					}
