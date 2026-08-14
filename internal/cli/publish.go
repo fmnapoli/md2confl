@@ -325,12 +325,17 @@ func (app *appEnv) writePageIDMarker(path string, source []byte, pageID string) 
 }
 
 // updatePageWithRetry fetches the current page version and updates it,
-// retrying once on a version conflict (409).
+// retrying once on a version conflict (409). A page whose body already matches
+// is left alone: the second pass runs on every publish, and rewriting an
+// identical body would add a page version per run.
 func updatePageWithRetry(client *confluence.Client, pageID, title, adfJSON string) error {
 	for attempt := 0; attempt < 2; attempt++ {
 		page, err := client.GetPage(pageID)
 		if err != nil {
 			return err
+		}
+		if adf.IsUnchanged(page.Body.AtlasDocFormat.Value, adfJSON) {
+			return nil
 		}
 		_, err = client.UpdatePage(pageID, title, adfJSON, page.Version.Number)
 		if err == nil {

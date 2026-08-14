@@ -424,6 +424,12 @@ func (app *appEnv) moveIfNeededServer(client *confluence.ServerClient, pageID, c
 
 // resolveInterDocLinksServer substitui links relativos *.md no Storage Format HTML
 // por URLs absolutas do Confluence usando os page-ids coletados no primeiro pass.
+//
+// finalHTML é sempre o corpo pré-resolução: é dele que sai o corpo canônico
+// desta execução, comparado com o que está publicado. Assim a fase é idempotente
+// (nada a fazer quando a página já está com os links resolvidos) sem deixar de
+// corrigir a página quando a URL de destino muda — por exemplo quando o título
+// da página alvo muda e o link precisa apontar para o novo endereço.
 func (app *appEnv) resolveInterDocLinksServer(client *confluence.ServerClient) error {
 	linkMap := app.serverLinkMap()
 
@@ -445,13 +451,15 @@ func (app *appEnv) resolveInterDocLinksServer(client *confluence.ServerClient) e
 			continue
 		}
 
+		if page.Body.AtlasDocFormat.Value == patchedHTML {
+			app.logger.Debug("Inter-document links already resolved", "file", filepath.Base(absPath))
+			continue
+		}
+
 		if _, err := client.UpdatePage(res.pageID, res.title, patchedHTML, page.Version.Number); err != nil {
 			app.logger.Warn("Could not update page with resolved links", "pageID", res.pageID, "error", err)
 			continue
 		}
-
-		// Mantém finalHTML alinhado ao que está publicado.
-		res.finalHTML = patchedHTML
 
 		app.logger.Info("Resolved inter-document links", "count", count, "file", filepath.Base(absPath))
 	}
