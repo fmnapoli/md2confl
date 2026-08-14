@@ -204,9 +204,9 @@ func (app *appEnv) publishDirTreeServer(client *confluence.ServerClient, parentI
 		existingPageID = extractPageID(pageSource)
 	}
 
-	// Referências de attachment e marcador do digest entram antes de publicar:
-	// é esse corpo que a comparação de idempotência e o segundo pass usam.
-	storageHTML = stampSourceMarker(title, patchMermaidRefs(storageHTML, pageSVGs))
+	// As referências de attachment entram antes de publicar: é esse corpo que a
+	// comparação de idempotência e o segundo pass usam como base.
+	storageHTML = patchMermaidRefs(storageHTML, pageSVGs)
 
 	dirResult, err := app.publishOrSkipServer(client, publishServerInput{
 		parentID:  parentID,
@@ -267,7 +267,7 @@ func (app *appEnv) publishDirTreeServer(client *confluence.ServerClient, parentI
 			continue
 		}
 		childTitle := titleFromSource(f.Content, strings.TrimSuffix(filepath.Base(f.Path), ".md"))
-		html = stampSourceMarker(childTitle, patchMermaidRefs(html, svgPaths))
+		html = patchMermaidRefs(html, svgPaths)
 
 		childResult, err := app.publishOrSkipServer(client, publishServerInput{
 			parentID:  dirResult.PageID,
@@ -356,23 +356,28 @@ func (app *appEnv) skippedResult(page *confluence.PageResponse, title string) *c
 }
 
 // publishOrSkipServer publica ou atualiza uma página via Server/DC API.
-// A decisão de pular compara o digest da fonte gravado no corpo publicado com o
-// do conteúdo atual (ver idempotency.go): comparar o HTML cru com o corpo
-// publicado não funciona, porque este já passou pela resolução de links.
+// A decisão de pular compara o digest da fonte guardado numa content property
+// da página com o do conteúdo atual (ver idempotency.go): comparar o HTML cru
+// com o corpo publicado não funciona, porque este já passou pela resolução de
+// links e pelas reescritas do Storage Format feitas pelo próprio Confluence.
 func (app *appEnv) publishOrSkipServer(client *confluence.ServerClient, in publishServerInput) (*confluence.PublishResult, error) {
+	digest := sourceDigest(in.title, in.html)
+
 	switch {
 	case in.pageID != "":
-		page, err := client.GetPage(in.pageID)
+		// A property vem no mesmo request da página, via expand.
+		page, err := client.GetPageWithProperty(in.pageID, digestPropertyKey)
 		if err != nil {
 			return nil, app.wrapConfluenceError(err)
 		}
-		if serverBodyUnchanged(page.Body.AtlasDocFormat.Value, in.html) {
+		if serverPageUnchanged(page.Property, digest, page.Body.AtlasDocFormat.Value, in.html) {
 			return app.skippedResult(page, in.title), nil
 		}
 		result, err := client.UpdatePage(in.pageID, in.title, in.html, page.Version.Number)
 		if err != nil {
 			return nil, app.wrapConfluenceError(err)
 		}
+		app.storePageDigest(client, in.pageID, pageDigest{Digest: digest}, page.Property.Version.Number)
 		return result, nil
 
 	case app.force:
@@ -388,7 +393,12 @@ func (app *appEnv) publishOrSkipServer(client *confluence.ServerClient, in publi
 			page = nil
 		}
 		if page != nil {
-			if serverBodyUnchanged(page.Body.AtlasDocFormat.Value, in.html) {
+			// A busca por título não expande properties: aqui vai um GET a mais.
+			prop, err := client.GetContentProperty(page.ID, digestPropertyKey)
+			if err != nil {
+				app.logger.Debug("Could not read the source digest", "pageID", page.ID, "error", err)
+			}
+			if serverPageUnchanged(prop, digest, page.Body.AtlasDocFormat.Value, in.html) {
 				return app.skippedResult(page, in.title), nil
 			}
 			if err := app.moveIfNeededServer(client, page.ID, page.ParentID, in.parentID); err != nil {
@@ -398,12 +408,14 @@ func (app *appEnv) publishOrSkipServer(client *confluence.ServerClient, in publi
 			if err != nil {
 				return nil, app.wrapConfluenceError(err)
 			}
+			app.storePageDigest(client, page.ID, pageDigest{Digest: digest}, prop.Version.Number)
 			return result, nil
 		}
 		result, err := client.CreatePage(app.space, in.title, in.parentID, in.html)
 		if err != nil {
 			return nil, app.wrapConfluenceError(err)
 		}
+		app.storePageDigest(client, result.PageID, pageDigest{Digest: digest}, 0)
 		return result, nil
 
 	default:
@@ -411,8 +423,54 @@ func (app *appEnv) publishOrSkipServer(client *confluence.ServerClient, in publi
 		if err != nil {
 			return nil, app.wrapConfluenceError(err)
 		}
+		app.storePageDigest(client, result.PageID, pageDigest{Digest: digest}, 0)
 		return result, nil
 	}
+}
+
+// storePageDigest grava o digest da fonte na content property da página.
+//
+// Sempre DEPOIS de a escrita do corpo ter dado certo: gravar antes deixaria uma
+// página com digest novo e corpo velho, que a execução seguinte pularia — o
+// falso-positivo que não pode acontecer. Uma falha aqui é só avisada: o pior
+// efeito é a página ser republicada na próxima execução.
+func (app *appEnv) storePageDigest(client *confluence.ServerClient, pageID string, value pageDigest, propertyVersion int) {
+	if pageID == "" {
+		return
+	}
+	if err := client.SetContentProperty(pageID, digestPropertyKey, value, propertyVersion); err != nil {
+		app.logger.Warn("Could not store the source digest — this page will be republished on the next run",
+			"pageID", pageID, "error", err)
+		app.addWarning(fmt.Sprintf("could not store the source digest for page %s: %v", pageID, err))
+		return
+	}
+	app.verifyDigestPersisted(client, pageID, value.Digest)
+}
+
+// verifyDigestPersisted relê o digest da primeira página gravada na execução.
+//
+// Uma instância pode aceitar a escrita e não devolver o valor (foi o que o
+// marcador em comentário HTML fazia: o Confluence descartava em silêncio). Sem
+// esta releitura o sintoma é indistinguível de "nada mudou": a ferramenta
+// segue republicando tudo e ninguém sabe por quê.
+func (app *appEnv) verifyDigestPersisted(client *confluence.ServerClient, pageID, digest string) {
+	if app.digestCheck == nil {
+		return
+	}
+	app.digestCheck.Do(func() {
+		prop, err := client.GetContentProperty(pageID, digestPropertyKey)
+		if err != nil {
+			app.logger.Debug("Could not verify the source digest", "pageID", pageID, "error", err)
+			return
+		}
+		if storedDigest(prop) == digest {
+			return
+		}
+		app.logger.Warn("This Confluence instance did not keep the md2confl source digest — every run will republish every page",
+			"pageID", pageID, "property", digestPropertyKey)
+		app.addWarning("Confluence did not keep the source digest (content property " +
+			digestPropertyKey + "); pages will be republished on every run")
+	})
 }
 
 // moveIfNeededServer move uma página para o parent correto via Server/DC API.
@@ -461,7 +519,7 @@ func (app *appEnv) resolveInterDocLinksServer(client *confluence.ServerClient) e
 			continue
 		}
 
-		if page.Body.AtlasDocFormat.Value == patchedHTML {
+		if sameHrefs(page.Body.AtlasDocFormat.Value, patchedHTML) {
 			app.logger.Debug("Inter-document links already resolved", "file", filepath.Base(absPath))
 			continue
 		}

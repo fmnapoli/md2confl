@@ -42,36 +42,40 @@ type docFailure struct {
 }
 
 type appEnv struct {
-	input          string
-	output         string
-	dryRun         bool
-	publish        bool
-	url            string
-	space          string
-	parentID       string
-	title          string
-	email          string
-	token          string
-	force          bool
-	writeMarker    bool
-	jsonOutput     bool
-	renderMermaid  bool
-	showVersion    bool
-	verbose        bool
-	concurrency    int
-	configPath     string
-	repoURL        string
-	repoRoot       string
-	userAgent      string
-	serverMode     bool
-	approve        bool
-	config         *Config
-	docResults     map[string]*docPublishResult // abs input path → result
-	docResultsMu   *sync.Mutex
-	warnings       *[]string
-	warningsMu     *sync.Mutex
-	failures       *[]docFailure
-	failuresMu     *sync.Mutex
+	input         string
+	output        string
+	dryRun        bool
+	publish       bool
+	url           string
+	space         string
+	parentID      string
+	title         string
+	email         string
+	token         string
+	force         bool
+	writeMarker   bool
+	jsonOutput    bool
+	renderMermaid bool
+	showVersion   bool
+	verbose       bool
+	concurrency   int
+	configPath    string
+	repoURL       string
+	repoRoot      string
+	userAgent     string
+	serverMode    bool
+	approve       bool
+	config        *Config
+	docResults    map[string]*docPublishResult // abs input path → result
+	docResultsMu  *sync.Mutex
+	warnings      *[]string
+	warningsMu    *sync.Mutex
+	failures      *[]docFailure
+	failuresMu    *sync.Mutex
+	// digestCheck garante uma única verificação por execução de que o servidor
+	// realmente guardou o digest da fonte. É ponteiro porque os clones por
+	// documento (withDocumentConfig) copiam o appEnv por valor.
+	digestCheck *sync.Once
 
 	version  string
 	stdout   io.Writer
@@ -92,14 +96,15 @@ func Run(args []string, version string, stdout, stderr io.Writer) int {
 	failures := make([]docFailure, 0)
 	outputMu := &sync.Mutex{}
 	app := &appEnv{
-		version:    version,
-		stdout:     stdout,
-		stderr:     stderr,
-		outputMu:   outputMu,
-		warnings:   &warnings,
-		warningsMu: &sync.Mutex{},
-		failures:   &failures,
-		failuresMu: &sync.Mutex{},
+		version:     version,
+		stdout:      stdout,
+		stderr:      stderr,
+		outputMu:    outputMu,
+		warnings:    &warnings,
+		warningsMu:  &sync.Mutex{},
+		failures:    &failures,
+		failuresMu:  &sync.Mutex{},
+		digestCheck: &sync.Once{},
 	}
 
 	if err := app.fromArgs(args); err != nil {

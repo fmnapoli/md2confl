@@ -6,8 +6,10 @@ package cli
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
-	"regexp"
+	"encoding/json"
+	"html"
+
+	"github.com/fmnapoli/md2confl/confluence"
 )
 
 // A publicação em Server/DC acontece em duas fases: a primeira publica cada
@@ -16,61 +18,100 @@ import (
 // (links relativos crus) com o corpo publicado (links já resolvidos) nunca
 // casa, então toda execução republicava toda página.
 //
-// Para comparar fonte com fonte, o corpo publicado carrega um marcador com o
-// digest da fonte que o gerou. O marcador é um comentário HTML no começo do
-// Storage Format: sobrevive à reescrita de hrefs da segunda fase, não é
-// renderizado e não custa chamada de API extra. Se o Confluence remover o
-// comentário, o digest some e a comparação cai no caminho antigo (byte a byte)
-// — degrada para republicar à toa, nunca para pular uma página que mudou.
+// A comparação passa a ser fonte contra fonte: o digest do Storage Format
+// pré-resolução fica gravado numa content property da página. O corpo não serve
+// como lugar para esse metadado — o Confluence Server reescreve o Storage
+// Format que recebe (verificado contra o TDN em ago/2026):
+//
+//   - comentários HTML são descartados por inteiro;
+//   - macros ganham ac:schema-version e um ac:macro-id (UUID gerado no
+//     servidor, impossível de prever localmente);
+//   - caracteres não-ASCII viram entidades ("Operações" → "Opera&ccedil;...").
+//
+// Isto é também o que condena comparar corpo com corpo, mesmo normalizando os
+// links: as três reescritas acima teriam de ser desfeitas, e o ac:macro-id não
+// tem como ser reproduzido.
 
-// sourceMarkerRegex captura o digest gravado no corpo publicado.
-var sourceMarkerRegex = regexp.MustCompile(`<!--\s*md2confl-source:\s*([0-9a-f]{64})\s*-->\n?`)
+// digestPropertyKey é a chave da content property que guarda o digest.
+// Precisa ser alfanumérica: com hífen, o Confluence Server responde HTTP 500 ao
+// expandir metadata.properties.<chave> no GET da página.
+const digestPropertyKey = "md2conflSource"
+
+// pageDigest é o valor da content property: o digest do Storage Format
+// pré-resolução de links que gerou a página.
+type pageDigest struct {
+	Digest string `json:"digest"`
+}
 
 // sourceDigest resume o que define o conteúdo de uma página: o título e o
 // Storage Format gerado a partir do Markdown, antes da resolução de links.
 // Qualquer mudança no Markdown, no título ou no conversor muda o digest.
 func sourceDigest(title, storageHTML string) string {
-	sum := sha256.Sum256([]byte(title + "\n" + stripSourceMarker(storageHTML)))
+	sum := sha256.Sum256([]byte(title + "\n" + storageHTML))
 	return hex.EncodeToString(sum[:])
 }
 
-// stampSourceMarker devolve o Storage Format prefixado com o marcador do
-// digest da fonte. É o corpo que vai para o Confluence e o que a segunda fase
-// usa como base — o marcador precisa acompanhar todas as republicações, senão
-// a execução seguinte não reconhece a página como já publicada.
-func stampSourceMarker(title, storageHTML string) string {
-	clean := stripSourceMarker(storageHTML)
-	return fmt.Sprintf("<!-- md2confl-source: %s -->\n", sourceDigest(title, clean)) + clean
-}
-
-// extractSourceMarker devolve o digest gravado no corpo, ou "" se não houver.
-func extractSourceMarker(body string) string {
-	m := sourceMarkerRegex.FindStringSubmatch(body)
-	if m == nil {
-		return ""
+// decodePageDigest lê o valor da content property. Devolve o valor zerado
+// quando a página não tem a property ou o conteúdo é ilegível — nos dois casos
+// a publicação segue como se a página fosse desconhecida.
+func decodePageDigest(prop confluence.ContentProperty) pageDigest {
+	if !prop.Exists() {
+		return pageDigest{}
 	}
-	return m[1]
+	var v pageDigest
+	if err := json.Unmarshal(prop.Value, &v); err != nil {
+		return pageDigest{}
+	}
+	return v
 }
 
-// stripSourceMarker remove o marcador do corpo.
-func stripSourceMarker(body string) string {
-	return sourceMarkerRegex.ReplaceAllString(body, "")
+// storedDigest devolve o digest da fonte gravado na página.
+func storedDigest(prop confluence.ContentProperty) string {
+	return decodePageDigest(prop).Digest
 }
 
-// serverBodyUnchanged decide se o corpo publicado já corresponde ao conteúdo
-// local. stampedHTML é o candidato já marcado (saída de stampSourceMarker).
+// serverPageUnchanged decide se a página publicada já corresponde à fonte local.
 //
-// Com marcador dos dois lados a comparação é fonte contra fonte, imune à
-// reescrita de links da segunda fase. Sem marcador no corpo publicado (página
-// criada por uma versão anterior, ou Confluence que descarta comentários) a
-// comparação volta a ser byte a byte: pode republicar à toa, mas não pula uma
-// página que mudou.
-func serverBodyUnchanged(publishedBody, stampedHTML string) bool {
-	if publishedBody == "" {
+// Com o digest gravado, a comparação é fonte contra fonte, imune à reescrita de
+// links da segunda fase. Sem digest (página publicada por uma versão anterior,
+// ou instância que não guardou a property) sobra a comparação byte a byte do
+// corpo: ela quase nunca casa no Confluence real, por causa das reescritas do
+// Storage Format, então o efeito prático é republicar — nunca pular uma página
+// que mudou.
+func serverPageUnchanged(prop confluence.ContentProperty, currentDigest, publishedBody, storageHTML string) bool {
+	if stored := storedDigest(prop); stored != "" {
+		return stored == currentDigest
+	}
+	return publishedBody != "" && publishedBody == storageHTML
+}
+
+// sameHrefs compara só os valores de href de dois documentos em Storage Format.
+//
+// É o que a segunda fase precisa saber ("a página já está com estes links?") e
+// a única comparação de corpo que sobrevive às reescritas do Confluence:
+// comentário, ac:macro-id e entidades de acento ficam todos fora de um href. As
+// entidades são desfeitas dos dois lados porque uma URL com caractere não-ASCII
+// volta escapada do servidor.
+func sameHrefs(publishedBody, patchedHTML string) bool {
+	published := extractHrefs(publishedBody)
+	patched := extractHrefs(patchedHTML)
+	if len(published) != len(patched) {
 		return false
 	}
-	if digest := extractSourceMarker(publishedBody); digest != "" {
-		return digest == extractSourceMarker(stampedHTML)
+	for i := range published {
+		if published[i] != patched[i] {
+			return false
+		}
 	}
-	return stripSourceMarker(publishedBody) == stripSourceMarker(stampedHTML)
+	return true
+}
+
+// extractHrefs devolve, em ordem, os hrefs do documento já desescapados.
+func extractHrefs(storageHTML string) []string {
+	matches := storageHrefRegex.FindAllStringSubmatch(storageHTML, -1)
+	hrefs := make([]string, 0, len(matches))
+	for _, m := range matches {
+		hrefs = append(hrefs, html.UnescapeString(m[2]))
+	}
+	return hrefs
 }

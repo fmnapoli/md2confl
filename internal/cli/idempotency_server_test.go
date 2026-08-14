@@ -107,7 +107,8 @@ func TestServerPublish_ChangedDocIsRepublished(t *testing.T) {
 	runPublish(t, cfgPath)
 	before := fake.pageVersions()
 
-	edited := docs["docs/tdn/guides/configuration.md"] + "\nUm parágrafo novo.\n"
+	// Texto sem acento: o corpo volta do servidor com os não-ASCII em entidades.
+	edited := docs["docs/tdn/guides/configuration.md"] + "\nA brand new paragraph.\n"
 	if err := os.WriteFile(filepath.Join(dir, "docs/tdn/guides/configuration.md"), []byte(edited), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +120,7 @@ func TestServerPublish_ChangedDocIsRepublished(t *testing.T) {
 		t.Errorf("the edited page was not republished (version %d → %d)",
 			before["Configuration"], after["Configuration"])
 	}
-	if conf := fake.pageByTitle("Configuration"); conf == nil || !strings.Contains(conf.Body, "Um parágrafo novo.") {
+	if conf := fake.pageByTitle("Configuration"); conf == nil || !strings.Contains(conf.Body, "A brand new paragraph.") {
 		t.Errorf("the new content was not published; body: %v", conf)
 	}
 	for _, title := range sortedTitles(before) {
@@ -243,5 +244,75 @@ func TestServerPublish_SingleDocumentKeepsResolvedLinks(t *testing.T) {
 	}
 	if got := fake.pageVersions()["TCloud Worker"]; got != before["TCloud Worker"] {
 		t.Errorf("page was republished: version %d → %d", before["TCloud Worker"], got)
+	}
+}
+
+// TestServerPublish_DiscardedDigestIsReportedAndSafe is the test that the HTML
+// comment marker would have failed. The comment was accepted by Confluence and
+// silently dropped from the stored body, so every run read a page with no
+// marker, concluded "changed" and republished — and the fake, which kept
+// whatever it was given, showed none of it.
+//
+// Here the server accepts the content property write and keeps nothing. Two
+// things must hold: the run has to say so out loud, and it must still be
+// correct — never skipping a page it cannot prove is unchanged.
+func TestServerPublish_DiscardedDigestIsReportedAndSafe(t *testing.T) {
+	dir := t.TempDir()
+	ts, fake := newFakeConfluenceServer(t)
+	fake.dropProperties = true
+	cfgPath := setupConsumerRepo(t, dir, ts.URL, consumerDocs())
+
+	stderr := runPublish(t, cfgPath)
+	if !strings.Contains(stderr, "did not keep the md2confl source digest") {
+		t.Errorf("the run must report that the digest was not persisted; stderr:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, digestPropertyKey) {
+		t.Errorf("the warning must name the content property; stderr:\n%s", stderr)
+	}
+
+	before := fake.pageVersions()
+	runPublish(t, cfgPath)
+	after := fake.pageVersions()
+
+	// Sem digest não há como provar que nada mudou: republicar é a resposta
+	// certa. O que não pode acontecer é pular por engano.
+	republished := 0
+	for _, title := range sortedTitles(before) {
+		if after[title] > before[title] {
+			republished++
+		}
+	}
+	if republished == 0 {
+		t.Error("without a persisted digest the pages must be republished, not skipped")
+	}
+}
+
+// TestServerPublish_SanitizedBodyStillSkips guards the reason the digest lives
+// outside the body: Confluence rewrites the Storage Format it stores (comments
+// dropped, ac:macro-id injected, accents escaped), so the published body of an
+// untouched page never equals the HTML that generated it.
+func TestServerPublish_SanitizedBodyStillSkips(t *testing.T) {
+	dir := t.TempDir()
+	ts, fake := newFakeConfluenceServer(t)
+	docs := consumerDocs()
+	// Documentação em pt-br: acentos são o caso comum, não a exceção.
+	docs["docs/tdn/guides/configuration.md"] = "# Configuration\n\nConfiguração de operação.\n"
+	cfgPath := setupConsumerRepo(t, dir, ts.URL, docs)
+
+	runPublish(t, cfgPath)
+
+	conf := fake.pageByTitle("Configuration")
+	if conf == nil {
+		t.Fatal("configuration page was not published")
+	}
+	// Pré-condição do teste: o corpo publicado passou pelas reescritas do
+	// servidor, senão a comparação byte a byte bastaria e o teste não provaria nada.
+	if !strings.Contains(conf.Body, "ac:macro-id=") || !strings.Contains(conf.Body, "&#") {
+		t.Fatalf("the fake did not rewrite the stored body:\n%s", conf.Body)
+	}
+
+	stderr := runPublish(t, cfgPath)
+	if !strings.Contains(stderr, "Skipped (unchanged)") {
+		t.Errorf("the second run must skip the page; stderr:\n%s", stderr)
 	}
 }
