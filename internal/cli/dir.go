@@ -260,6 +260,10 @@ func (app *appEnv) publishDirTreeServer(client *confluence.ServerClient, parentI
 						*childResult = *updated
 					}
 				}
+				// O segundo pass republica o finalHTML com os links
+				// resolvidos; sem esta atualização ele reenviaria o HTML
+				// anterior ao patch, apagando as referências de attachment.
+				html = patchedHTML
 			}
 		}
 
