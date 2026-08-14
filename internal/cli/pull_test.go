@@ -19,11 +19,11 @@ import (
 // mockPullClient implements pullClient for testing.
 type mockPullClient struct {
 	pages       map[string]*confluence.PageResponse // pageID → page
-	children    map[string][]confluence.ChildPage    // pageID → children
-	attachments map[string][]confluence.Attachment   // pageID → attachments
-	downloads   map[string][]byte                    // downloadLink → bytes
-	spaceIDs    map[string]string                    // spaceKey → spaceID
-	titlePages  map[string]*confluence.PageResponse  // "spaceID:title" → page
+	children    map[string][]confluence.ChildPage   // pageID → children
+	attachments map[string][]confluence.Attachment  // pageID → attachments
+	downloads   map[string][]byte                   // downloadLink → bytes
+	spaceIDs    map[string]string                   // spaceKey → spaceID
+	titlePages  map[string]*confluence.PageResponse // "spaceID:title" → page
 	getPageErr  error
 }
 
@@ -839,4 +839,3 @@ func expectFile(t *testing.T, path string) {
 		t.Errorf("expected file at %s", path)
 	}
 }
-

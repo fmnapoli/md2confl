@@ -52,6 +52,16 @@ type fakeConfluenceServer struct {
 	// keep nothing, emulating an instance that discards tool metadata — the
 	// failure mode that an HTML comment in the body hit on the real TDN.
 	dropProperties bool
+
+	// failPropertySets rejects creating or updating a content property while
+	// still allowing it to be deleted, emulating a run that updates the body
+	// and then loses the metadata write (5xx, a blocked endpoint, or the
+	// process dying in between).
+	failPropertySets bool
+
+	// failPropertyDeletes rejects removing a content property, which is what
+	// invalidates the previous digest before the body is rewritten.
+	failPropertyDeletes bool
 }
 
 func newFakeConfluenceServer(t *testing.T) (*httptest.Server, *fakeConfluenceServer) {
@@ -173,6 +183,19 @@ func (f *fakeConfluenceServer) handleProperty(w http.ResponseWriter, r *http.Req
 		})
 
 	case http.MethodPost, http.MethodPut:
+		if f.failPropertySets {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		_, exists := p.Properties[key]
+		// O Confluence real rejeita POST em chave existente: criar e atualizar
+		// são verbos diferentes. Aceitar como upsert esconderia o caso em que a
+		// ferramenta escreve sem antes invalidar o valor anterior.
+		if r.Method == http.MethodPost && exists {
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"statusCode":409,"message":"Property already exists"}`))
+			return
+		}
 		body, _ := io.ReadAll(r.Body)
 		var req struct {
 			Value   json.RawMessage `json:"value"`
@@ -195,6 +218,18 @@ func (f *fakeConfluenceServer) handleProperty(w http.ResponseWriter, r *http.Req
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"key": key, "value": req.Value, "version": map[string]any{"number": version},
 		})
+
+	case http.MethodDelete:
+		if f.failPropertyDeletes {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		if _, exists := p.Properties[key]; !exists {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		delete(p.Properties, key)
+		w.WriteHeader(http.StatusNoContent)
 
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

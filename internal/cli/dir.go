@@ -373,72 +373,99 @@ func (app *appEnv) publishOrSkipServer(client *confluence.ServerClient, in publi
 		if serverPageUnchanged(page.Property, digest, page.Body.AtlasDocFormat.Value, in.html) {
 			return app.skippedResult(page, in.title), nil
 		}
-		result, err := client.UpdatePage(in.pageID, in.title, in.html, page.Version.Number)
-		if err != nil {
-			return nil, app.wrapConfluenceError(err)
-		}
-		app.storePageDigest(client, in.pageID, pageDigest{Digest: digest}, page.Property.Version.Number)
-		return result, nil
+		return app.updateAndStampServer(client, page, in, digest)
 
 	case app.force:
-		page, err := client.FindByTitle(app.space, in.title)
+		found, err := client.FindByTitle(app.space, in.title)
 		if err != nil {
 			return nil, app.wrapConfluenceError(err)
 		}
 		// Only reuse existing page if it belongs to the correct parent.
 		// Prevents overwriting pages with the same title in other sections.
-		if page != nil && in.parentID != "" && page.ParentID != in.parentID {
+		if found != nil && in.parentID != "" && found.ParentID != in.parentID {
 			app.logger.Info("Skipping page with same title under different parent",
-				"title", in.title, "found_parent", page.ParentID, "expected_parent", in.parentID)
-			page = nil
+				"title", in.title, "found_parent", found.ParentID, "expected_parent", in.parentID)
+			found = nil
 		}
-		if page != nil {
-			// A busca por título não expande properties: aqui vai um GET a mais.
-			prop, err := client.GetContentProperty(page.ID, digestPropertyKey)
+		if found != nil {
+			// A busca por título não expande properties: relê a página por ID
+			// para saber, sem ambiguidade, se existe digest gravado. Sem essa
+			// certeza não dá para decidir se é preciso invalidá-lo antes de
+			// escrever o corpo.
+			page, err := client.GetPageWithProperty(found.ID, digestPropertyKey)
 			if err != nil {
-				app.logger.Debug("Could not read the source digest", "pageID", page.ID, "error", err)
+				return nil, app.wrapConfluenceError(err)
 			}
-			if serverPageUnchanged(prop, digest, page.Body.AtlasDocFormat.Value, in.html) {
+			page.ParentID = found.ParentID
+			if serverPageUnchanged(page.Property, digest, page.Body.AtlasDocFormat.Value, in.html) {
 				return app.skippedResult(page, in.title), nil
 			}
 			if err := app.moveIfNeededServer(client, page.ID, page.ParentID, in.parentID); err != nil {
 				return nil, err
 			}
-			result, err := client.UpdatePage(page.ID, in.title, in.html, page.Version.Number)
-			if err != nil {
-				return nil, app.wrapConfluenceError(err)
-			}
-			app.storePageDigest(client, page.ID, pageDigest{Digest: digest}, prop.Version.Number)
-			return result, nil
+			return app.updateAndStampServer(client, page, in, digest)
 		}
-		result, err := client.CreatePage(app.space, in.title, in.parentID, in.html)
-		if err != nil {
-			return nil, app.wrapConfluenceError(err)
-		}
-		app.storePageDigest(client, result.PageID, pageDigest{Digest: digest}, 0)
-		return result, nil
+		return app.createAndStampServer(client, in, digest)
 
 	default:
-		result, err := client.CreatePage(app.space, in.title, in.parentID, in.html)
-		if err != nil {
-			return nil, app.wrapConfluenceError(err)
-		}
-		app.storePageDigest(client, result.PageID, pageDigest{Digest: digest}, 0)
-		return result, nil
+		return app.createAndStampServer(client, in, digest)
 	}
 }
 
-// storePageDigest grava o digest da fonte na content property da página.
+// updateAndStampServer escreve o corpo da página e regrava o digest da fonte.
 //
-// Sempre DEPOIS de a escrita do corpo ter dado certo: gravar antes deixaria uma
-// página com digest novo e corpo velho, que a execução seguinte pularia — o
-// falso-positivo que não pode acontecer. Uma falha aqui é só avisada: o pior
-// efeito é a página ser republicada na próxima execução.
-func (app *appEnv) storePageDigest(client *confluence.ServerClient, pageID string, value pageDigest, propertyVersion int) {
+// A ordem é: invalidar o digest anterior → escrever o corpo → gravar o digest
+// novo. Gravar só no fim não basta: se a escrita do corpo desse certo e a do
+// digest não (5xx, endpoint bloqueado, processo morto entre as duas), a página
+// ficaria com o corpo novo e o digest da fonte ANTERIOR — e qualquer execução
+// posterior cuja fonte tivesse aquele digest (um revert, um rollback, rodar uma
+// tag antiga) seria pulada, deixando o conteúdo errado publicado em silêncio.
+//
+// Invalidando antes, toda janela de falha deixa a página SEM digest, que é o
+// estado que faz a execução seguinte republicar.
+func (app *appEnv) updateAndStampServer(client *confluence.ServerClient, page *confluence.PageResponse, in publishServerInput, digest string) (*confluence.PublishResult, error) {
+	if page.Property.Exists() {
+		if err := client.DeleteContentProperty(page.ID, digestPropertyKey); err != nil {
+			// Seguir daqui recriaria exatamente o buraco descrito acima, então
+			// a página fica como está e o documento entra como falha.
+			return nil, app.wrapConfluenceErrorf(err,
+				"the page was left untouched on purpose: updating it while the previous digest is still stored would make a later run skip it",
+				"invalidating the source digest of page %s before updating it", page.ID)
+		}
+	}
+
+	result, err := client.UpdatePage(page.ID, in.title, in.html, page.Version.Number)
+	if err != nil {
+		return nil, app.wrapConfluenceError(err)
+	}
+	app.storePageDigest(client, page.ID, pageDigest{Digest: digest})
+	return result, nil
+}
+
+// createAndStampServer cria a página e grava o digest da fonte. Página nova não
+// tem digest anterior para invalidar.
+func (app *appEnv) createAndStampServer(client *confluence.ServerClient, in publishServerInput, digest string) (*confluence.PublishResult, error) {
+	result, err := client.CreatePage(app.space, in.title, in.parentID, in.html)
+	if err != nil {
+		return nil, app.wrapConfluenceError(err)
+	}
+	app.storePageDigest(client, result.PageID, pageDigest{Digest: digest})
+	return result, nil
+}
+
+// storePageDigest grava o digest da fonte na content property da página, sempre
+// depois de a escrita do corpo ter dado certo e do digest anterior ter sido
+// invalidado (ver updateAndStampServer). Por isso a chave nunca existe aqui, e
+// a gravação é sempre uma criação.
+//
+// Uma falha aqui é só avisada, e aí sim o pior efeito é a página ser
+// republicada na próxima execução: o que ficou para trás foi a ausência de
+// digest, não um digest defasado.
+func (app *appEnv) storePageDigest(client *confluence.ServerClient, pageID string, value pageDigest) {
 	if pageID == "" {
 		return
 	}
-	if err := client.SetContentProperty(pageID, digestPropertyKey, value, propertyVersion); err != nil {
+	if err := client.SetContentProperty(pageID, digestPropertyKey, value, 0); err != nil {
 		app.logger.Warn("Could not store the source digest — this page will be republished on the next run",
 			"pageID", pageID, "error", err)
 		app.addWarning(fmt.Sprintf("could not store the source digest for page %s: %v", pageID, err))
@@ -453,24 +480,26 @@ func (app *appEnv) storePageDigest(client *confluence.ServerClient, pageID strin
 // marcador em comentário HTML fazia: o Confluence descartava em silêncio). Sem
 // esta releitura o sintoma é indistinguível de "nada mudou": a ferramenta
 // segue republicando tudo e ninguém sabe por quê.
+//
+// A verificação só se dá por feita quando a leitura acontece: um GET que falha
+// por acaso não pode desligar a checagem da execução inteira.
 func (app *appEnv) verifyDigestPersisted(client *confluence.ServerClient, pageID, digest string) {
-	if app.digestCheck == nil {
+	if app.digestCheck == nil || !app.digestCheck.begin() {
 		return
 	}
-	app.digestCheck.Do(func() {
-		prop, err := client.GetContentProperty(pageID, digestPropertyKey)
-		if err != nil {
-			app.logger.Debug("Could not verify the source digest", "pageID", pageID, "error", err)
-			return
-		}
-		if storedDigest(prop) == digest {
-			return
-		}
-		app.logger.Warn("This Confluence instance did not keep the md2confl source digest — every run will republish every page",
-			"pageID", pageID, "property", digestPropertyKey)
-		app.addWarning("Confluence did not keep the source digest (content property " +
-			digestPropertyKey + "); pages will be republished on every run")
-	})
+	prop, err := client.GetContentProperty(pageID, digestPropertyKey)
+	if err != nil {
+		app.logger.Debug("Could not verify the source digest", "pageID", pageID, "error", err)
+		app.digestCheck.abort()
+		return
+	}
+	if storedDigest(prop) == digest {
+		return
+	}
+	app.logger.Warn("This Confluence instance did not keep the md2confl source digest — every run will republish every page",
+		"pageID", pageID, "property", digestPropertyKey)
+	app.addWarning("Confluence did not keep the source digest (content property " +
+		digestPropertyKey + "); pages will be republished on every run")
 }
 
 // moveIfNeededServer move uma página para o parent correto via Server/DC API.

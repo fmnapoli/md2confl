@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"html"
+	"sync"
 
 	"github.com/fmnapoli/md2confl/confluence"
 )
@@ -43,9 +44,43 @@ type pageDigest struct {
 	Digest string `json:"digest"`
 }
 
+// retryableOnce roda uma tarefa uma única vez por execução, mas só a dá por
+// feita quando ela conseguiu chegar ao fim. sync.Once não serve: uma falha
+// transitória na primeira tentativa desligaria a tarefa para sempre.
+type retryableOnce struct {
+	mu    sync.Mutex
+	taken bool
+}
+
+// begin reserva a execução da tarefa. Devolve false quando outra já a fez ou a
+// está fazendo.
+func (o *retryableOnce) begin() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.taken {
+		return false
+	}
+	o.taken = true
+	return true
+}
+
+// abort devolve a reserva: a tarefa não chegou ao fim e outra chamada pode
+// tentar de novo.
+func (o *retryableOnce) abort() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.taken = false
+}
+
 // sourceDigest resume o que define o conteúdo de uma página: o título e o
 // Storage Format gerado a partir do Markdown, antes da resolução de links.
 // Qualquer mudança no Markdown, no título ou no conversor muda o digest.
+//
+// parentID de propósito fica de fora: o move de página não é feito pelo
+// UpdatePage do Server (ele não envia ancestors), então mover não é um efeito
+// que o digest precise disparar. Se um dia moveIfNeededServer passar a mover de
+// verdade, parentID tem de entrar aqui — senão uma página com o digest em dia
+// seria pulada antes de chegar ao move.
 func sourceDigest(title, storageHTML string) string {
 	sum := sha256.Sum256([]byte(title + "\n" + storageHTML))
 	return hex.EncodeToString(sum[:])

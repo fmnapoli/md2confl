@@ -75,7 +75,7 @@ type appEnv struct {
 	// digestCheck garante uma única verificação por execução de que o servidor
 	// realmente guardou o digest da fonte. É ponteiro porque os clones por
 	// documento (withDocumentConfig) copiam o appEnv por valor.
-	digestCheck *sync.Once
+	digestCheck *retryableOnce
 
 	version  string
 	stdout   io.Writer
@@ -104,7 +104,7 @@ func Run(args []string, version string, stdout, stderr io.Writer) int {
 		warningsMu:  &sync.Mutex{},
 		failures:    &failures,
 		failuresMu:  &sync.Mutex{},
-		digestCheck: &sync.Once{},
+		digestCheck: &retryableOnce{},
 	}
 
 	if err := app.fromArgs(args); err != nil {

@@ -316,3 +316,123 @@ func TestServerPublish_SanitizedBodyStillSkips(t *testing.T) {
 		t.Errorf("the second run must skip the page; stderr:\n%s", stderr)
 	}
 }
+
+// publishSingleDoc writes a one-document config and returns its path. Keeping
+// the tree to a single file isolates the digest bookkeeping from the second
+// pass, which would otherwise rewrite the page for its own reasons.
+func publishSingleDoc(t *testing.T, dir, baseURL, content string) string {
+	t.Helper()
+	cfg := `url: ` + baseURL + `
+space: TEST
+email: user@example.com
+server: true
+force: true
+write-marker: false
+documents:
+  - input: doc.md
+`
+	cfgPath := writeConfigAndDocs(t, dir, cfg, map[string]string{"doc.md": content})
+	t.Chdir(dir)
+	t.Setenv("CONFLUENCE_TOKEN", "fake-token")
+	return cfgPath
+}
+
+// TestServerPublish_LostDigestWriteDoesNotStrandContent is the false positive
+// the review caught: the body write succeeds and the digest write does not, so
+// the page keeps the digest of the PREVIOUS source while already showing the
+// new body. Any later run whose source hashes to that stale digest — a revert,
+// a rollback, re-running an older tag — is skipped, and the wrong content stays
+// published with nothing in the log to show for it.
+//
+// The digest must therefore be invalidated BEFORE the body is written: a crash
+// anywhere in between leaves no digest at all, which republishes.
+func TestServerPublish_LostDigestWriteDoesNotStrandContent(t *testing.T) {
+	tests := []struct {
+		name   string
+		break_ func(f *fakeConfluenceServer)
+	}{
+		// A instância aceita a escrita e não guarda nada.
+		{"property descartada", func(f *fakeConfluenceServer) { f.dropProperties = true }},
+		// A escrita falha (5xx, endpoint bloqueado, processo morto no meio).
+		{"escrita de property falhando", func(f *fakeConfluenceServer) { f.failPropertySets = true }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			ts, fake := newFakeConfluenceServer(t)
+			const v1 = "# Doc\n\nVERSION ONE\n"
+			const v2 = "# Doc\n\nVERSION TWO\n"
+			cfgPath := publishSingleDoc(t, dir, ts.URL, v1)
+
+			// V1 publicada normalmente, com digest gravado.
+			runPublish(t, cfgPath)
+
+			// V2 publicada sem que o digest acompanhe.
+			tt.break_(fake)
+			if err := os.WriteFile(filepath.Join(dir, "doc.md"), []byte(v2), 0644); err != nil {
+				t.Fatal(err)
+			}
+			runPublish(t, cfgPath)
+			if page := fake.pageByTitle("Doc"); !strings.Contains(page.Body, "VERSION TWO") {
+				t.Fatalf("V2 was not published; body: %s", page.Body)
+			}
+
+			// Volta a fonte para V1 — como um revert no repositório.
+			fake.dropProperties = false
+			fake.failPropertySets = false
+			if err := os.WriteFile(filepath.Join(dir, "doc.md"), []byte(v1), 0644); err != nil {
+				t.Fatal(err)
+			}
+			stderr := runPublish(t, cfgPath)
+
+			page := fake.pageByTitle("Doc")
+			if strings.Contains(page.Body, "VERSION TWO") {
+				t.Errorf("reverting the source left the old body published (skipped on a stale digest)\nstderr: %s\nbody: %s",
+					stderr, page.Body)
+			}
+			if !strings.Contains(page.Body, "VERSION ONE") {
+				t.Errorf("the reverted source was not published\nbody: %s", page.Body)
+			}
+		})
+	}
+}
+
+// TestServerPublish_FailedInvalidationKeepsBody covers the deliberate choice
+// made when the previous digest cannot be invalidated: the page is left alone
+// and the document is reported as failed. Writing the body anyway would leave
+// the new content under the old digest — the exact state that makes a later
+// run skip a page it should have republished.
+func TestServerPublish_FailedInvalidationKeepsBody(t *testing.T) {
+	dir := t.TempDir()
+	ts, fake := newFakeConfluenceServer(t)
+	const v1 = "# Doc\n\nVERSION ONE\n"
+	cfgPath := publishSingleDoc(t, dir, ts.URL, v1)
+
+	runPublish(t, cfgPath)
+
+	fake.failPropertyDeletes = true
+	if err := os.WriteFile(filepath.Join(dir, "doc.md"), []byte("# Doc\n\nVERSION TWO\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr strings.Builder
+	if code := Run([]string{"--config", cfgPath}, "test", &stdout, &stderr); code == 0 {
+		t.Errorf("a run that cannot invalidate the digest must not report success")
+	}
+	if !strings.Contains(stderr.String(), "invalidating the source digest") {
+		t.Errorf("the failure must name what went wrong; stderr:\n%s", stderr.String())
+	}
+
+	page := fake.pageByTitle("Doc")
+	if strings.Contains(page.Body, "VERSION TWO") {
+		t.Errorf("the body was advanced while the old digest was still in place\nbody: %s", page.Body)
+	}
+
+	// Com o servidor de volta ao normal, a publicação acontece.
+	fake.failPropertyDeletes = false
+	runPublish(t, cfgPath)
+	if page := fake.pageByTitle("Doc"); !strings.Contains(page.Body, "VERSION TWO") {
+		t.Errorf("the page was not published once the server recovered\nbody: %s", page.Body)
+	}
+}

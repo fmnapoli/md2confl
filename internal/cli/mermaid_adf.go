@@ -17,9 +17,9 @@ import (
 
 // mermaidBlock holds information about a mermaid codeBlock in the ADF tree.
 type mermaidBlock struct {
-	index  int        // position in parent's Content slice
+	index  int         // position in parent's Content slice
 	parent *[]adf.Node // pointer to parent's Content slice
-	source string     // the mermaid diagram source text
+	source string      // the mermaid diagram source text
 }
 
 // findMermaidBlocks walks the ADF document and returns all codeBlocks with language "mermaid".

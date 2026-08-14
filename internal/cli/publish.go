@@ -285,6 +285,24 @@ func (app *appEnv) uploadAndPatchImages(client *confluence.Client, doc *adf.Docu
 	return nil
 }
 
+// wrapConfluenceErrorf é wrapConfluenceError preservando contexto: a mensagem
+// da APIError sozinha ("unexpected API response 500") não diz que operação
+// falhou nem por que ela era importante.
+func (app *appEnv) wrapConfluenceErrorf(err error, hint, format string, args ...any) error {
+	var apiErr *apiError
+	if !errors.As(app.wrapConfluenceError(err), &apiErr) {
+		return fmt.Errorf("%s: %w", fmt.Sprintf(format, args...), err)
+	}
+	if hint == "" {
+		hint = apiErr.hint
+	}
+	return &apiError{
+		message:  fmt.Sprintf(format, args...) + ": " + apiErr.message,
+		hint:     hint,
+		exitCode: apiErr.exitCode,
+	}
+}
+
 func (app *appEnv) wrapConfluenceError(err error) error {
 	var apiErr *confluence.APIError
 	if errors.As(err, &apiErr) {

@@ -263,6 +263,28 @@ func (c *ServerClient) GetContentProperty(pageID, key string) (ContentProperty, 
 	return prop, nil
 }
 
+// DeleteContentProperty remove uma content property. Uma chave que não existe
+// não é erro: o efeito pretendido — a página não carregar aquele metadado — já
+// está valendo.
+func (c *ServerClient) DeleteContentProperty(pageID, key string) error {
+	reqURL := fmt.Sprintf("%s/content/%s/property/%s", c.baseAPIURL, pageID, url.PathEscape(key))
+	req, err := http.NewRequest("DELETE", reqURL, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.doRequest(req)
+	if err != nil {
+		return &APIError{Category: ErrCategoryNetwork, Message: fmt.Sprintf("network error: %v", err)}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 204 || resp.StatusCode == 200 || resp.StatusCode == 404 {
+		return nil
+	}
+	return c.handleErrorResponse(resp)
+}
+
 // SetContentProperty grava uma content property. currentVersion é a versão da
 // property já existente (0 quando ela não existe): o Confluence cria com POST e
 // atualiza com PUT informando a versão seguinte.
