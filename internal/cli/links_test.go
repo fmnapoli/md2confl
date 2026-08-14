@@ -108,3 +108,102 @@ documents:
 		t.Errorf("expected link count in preview, got %q", stderr.String())
 	}
 }
+
+func TestPatchStorageLinks(t *testing.T) {
+	base := filepath.Join(string(filepath.Separator), "repo")
+	linkMap := map[string]string{
+		filepath.Join(base, "docs", "guide.md"): "https://wiki/display/X/Guide",
+	}
+	repoURL := "https://github.com/acme/repo/blob/main/"
+
+	tests := []struct {
+		name  string
+		html  string
+		want  string
+		count int
+	}{
+		{
+			name:  "plain relative link",
+			html:  `<p><a href="docs/guide.md">Guide</a></p>`,
+			want:  `<p><a href="https://wiki/display/X/Guide">Guide</a></p>`,
+			count: 1,
+		},
+		{
+			name:  "dot slash prefix",
+			html:  `<p><a href="./docs/guide.md">Guide</a></p>`,
+			want:  `<p><a href="https://wiki/display/X/Guide">Guide</a></p>`,
+			count: 1,
+		},
+		{
+			name:  "fragment is preserved",
+			html:  `<p><a href="docs/guide.md#setup">Setup</a></p>`,
+			want:  `<p><a href="https://wiki/display/X/Guide#setup">Setup</a></p>`,
+			count: 1,
+		},
+		{
+			name:  "unpublished target falls back to repo URL",
+			html:  `<p><a href="Makefile">build</a></p>`,
+			want:  `<p><a href="https://github.com/acme/repo/blob/main/Makefile">build</a></p>`,
+			count: 1,
+		},
+		{
+			name:  "absolute URL untouched",
+			html:  `<p><a href="https://example.com/x.md">ext</a></p>`,
+			want:  `<p><a href="https://example.com/x.md">ext</a></p>`,
+			count: 0,
+		},
+		{
+			name:  "internal anchor untouched",
+			html:  `<p><a href="#secao">section</a></p>`,
+			want:  `<p><a href="#secao">section</a></p>`,
+			count: 0,
+		},
+		{
+			name:  "macro attribute ac:href untouched",
+			html:  `<ac:link ac:href="docs/guide.md"/>`,
+			want:  `<ac:link ac:href="docs/guide.md"/>`,
+			count: 0,
+		},
+		{
+			name:  "several links in one document",
+			html:  `<a href="docs/guide.md">a</a><a href="./docs/guide.md#x">b</a>`,
+			want:  `<a href="https://wiki/display/X/Guide">a</a><a href="https://wiki/display/X/Guide#x">b</a>`,
+			count: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, count := patchStorageLinks(tt.html, base, linkMap, repoURL, base)
+			if count != tt.count {
+				t.Errorf("count = %d, want %d", count, tt.count)
+			}
+			if got != tt.want {
+				t.Errorf("got  %s\nwant %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestServerLinkMap_FallsBackToViewpage(t *testing.T) {
+	app := &appEnv{
+		url: "https://tdn.example.com/",
+		docResults: map[string]*docPublishResult{
+			"/repo/a.md": {pageID: "1", pageURL: "https://tdn.example.com/display/X/A"},
+			"/repo/b.md": {pageID: "2"},
+			"/repo/c.md": {},
+		},
+	}
+
+	linkMap := app.serverLinkMap()
+
+	if got, want := linkMap["/repo/a.md"], "https://tdn.example.com/display/X/A"; got != want {
+		t.Errorf("a.md = %q, want %q", got, want)
+	}
+	if got, want := linkMap["/repo/b.md"], "https://tdn.example.com/pages/viewpage.action?pageId=2"; got != want {
+		t.Errorf("b.md = %q, want %q", got, want)
+	}
+	if _, ok := linkMap["/repo/c.md"]; ok {
+		t.Error("documents without page ID must stay out of the link map")
+	}
+}

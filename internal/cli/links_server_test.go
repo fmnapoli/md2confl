@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -211,6 +213,10 @@ func TestResolveInterDocLinksServer_ConfigMode(t *testing.T) {
 	ts, fake := newFakeConfluenceServer(t)
 
 	cfgPath := writeConfigAndDocs(t, dir, serverConfig(ts.URL), consumerDocs())
+	// findRepoRoot() needs a .git directory to anchor the repo-url fallback.
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	t.Chdir(dir)
 	t.Setenv("CONFLUENCE_TOKEN", "fake-token")
@@ -235,10 +241,23 @@ func TestResolveInterDocLinksServer_ConfigMode(t *testing.T) {
 
 	archURL := ts.URL + "/display/TEST/" + arch.ID
 	confURL := ts.URL + "/display/TEST/" + conf.ID
-	_ = confURL
 
-	if !strings.Contains(readme.Body, `href="`+archURL+`"`) {
-		t.Errorf("README page missing %s\nbody: %s", archURL, readme.Body)
+	for _, want := range []string{
+		`href="` + archURL + `"`,
+		// "./" prefixed link.
+		`href="` + confURL + `"`,
+		// Link carrying a fragment.
+		`href="` + confURL + `#providers"`,
+		// Non-Markdown target: falls back to the repository URL.
+		`href="https://github.com/acme/tcloud-worker/blob/main/charts/tcloud-worker/values.yaml"`,
+	} {
+		if !strings.Contains(readme.Body, want) {
+			t.Errorf("README page missing %s\nbody: %s", want, readme.Body)
+		}
+	}
+
+	if strings.Contains(readme.Body, `href="docs/`) || strings.Contains(readme.Body, `href="./docs/`) {
+		t.Errorf("README page still contains raw relative links\nbody: %s", readme.Body)
 	}
 
 	// The reverse direction (child doc → root README) must resolve too.

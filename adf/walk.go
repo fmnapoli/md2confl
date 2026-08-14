@@ -6,6 +6,7 @@ package adf
 import (
 	"encoding/json"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -64,6 +65,53 @@ func patchImageNode(node *Node, attachmentMap map[string]string, pageID string) 
 	}
 }
 
+// schemeRegex matches an absolute URI scheme prefix (http:, mailto:, tel:, ...).
+var schemeRegex = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.\-]*:`)
+
+// ResolveHref resolves a single relative link href against a base directory.
+// It returns the Confluence page URL taken from linkMap, or — when the target
+// is not a published page — the repository URL built from repoURL and repoRoot.
+// Any fragment (#anchor) is stripped before matching and reattached to the
+// result. The second return value reports whether the href was resolved;
+// absolute URIs, protocol-relative URLs and bare fragments never are.
+//
+// It backs both link resolvers: the ADF one below and the Storage Format one
+// used in Server/DC mode, which must stay in lockstep.
+func ResolveHref(href, baseDir string, linkMap map[string]string, repoURL, repoRoot string) (string, bool) {
+	if href == "" || strings.HasPrefix(href, "//") || schemeRegex.MatchString(href) {
+		return "", false
+	}
+
+	cleanHref := href
+	fragment := ""
+	if idx := strings.Index(cleanHref, "#"); idx >= 0 {
+		fragment = cleanHref[idx:]
+		cleanHref = cleanHref[:idx]
+	}
+	if cleanHref == "" {
+		return "", false
+	}
+
+	// filepath.Join already normalizes "./" and "../" segments.
+	absResolved, err := filepath.Abs(filepath.Join(baseDir, cleanHref))
+	if err != nil {
+		return "", false
+	}
+
+	if pageURL, found := linkMap[absResolved]; found && pageURL != "" {
+		return pageURL + fragment, true
+	}
+
+	if repoURL != "" && repoRoot != "" {
+		relPath, err := filepath.Rel(repoRoot, absResolved)
+		if err == nil && !strings.HasPrefix(relPath, "..") {
+			return repoURL + filepath.ToSlash(relPath) + fragment, true
+		}
+	}
+
+	return "", false
+}
+
 // PatchDocLinks walks the ADF tree and replaces relative Markdown link hrefs
 // with Confluence page URLs using the provided linkMap. Links not found in
 // linkMap are resolved to the repository URL if repoURL and repoRoot are set.
@@ -84,38 +132,12 @@ func patchNodeLinks(node *Node, baseDir string, linkMap map[string]string, repoU
 			continue
 		}
 		href, ok := node.Marks[i].Attrs["href"].(string)
-		if !ok || href == "" {
+		if !ok {
 			continue
 		}
-		if strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") || strings.HasPrefix(href, "//") {
-			continue
-		}
-
-		cleanHref := href
-		fragment := ""
-		if idx := strings.Index(cleanHref, "#"); idx >= 0 {
-			fragment = cleanHref[idx:]
-			cleanHref = cleanHref[:idx]
-		}
-		if cleanHref == "" {
-			continue
-		}
-
-		resolved := filepath.Join(baseDir, cleanHref)
-		absResolved, err := filepath.Abs(resolved)
-		if err != nil {
-			continue
-		}
-
-		if pageURL, found := linkMap[absResolved]; found {
-			node.Marks[i].Attrs["href"] = pageURL + fragment
+		if resolved, found := ResolveHref(href, baseDir, linkMap, repoURL, repoRoot); found {
+			node.Marks[i].Attrs["href"] = resolved
 			count++
-		} else if repoURL != "" && repoRoot != "" {
-			relPath, err := filepath.Rel(repoRoot, absResolved)
-			if err == nil && !strings.HasPrefix(relPath, "..") {
-				node.Marks[i].Attrs["href"] = repoURL + relPath + fragment
-				count++
-			}
 		}
 	}
 
@@ -144,34 +166,11 @@ func countNodeResolvableLinks(node *Node, baseDir string, linkMap map[string]str
 			continue
 		}
 		href, ok := mark.Attrs["href"].(string)
-		if !ok || href == "" {
+		if !ok {
 			continue
 		}
-		if strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") || strings.HasPrefix(href, "//") {
-			continue
-		}
-
-		cleanHref := href
-		if idx := strings.Index(cleanHref, "#"); idx >= 0 {
-			cleanHref = cleanHref[:idx]
-		}
-		if cleanHref == "" {
-			continue
-		}
-
-		resolved := filepath.Join(baseDir, cleanHref)
-		absResolved, err := filepath.Abs(resolved)
-		if err != nil {
-			continue
-		}
-
-		if _, found := linkMap[absResolved]; found {
+		if _, found := ResolveHref(href, baseDir, linkMap, repoURL, repoRoot); found {
 			count++
-		} else if repoURL != "" && repoRoot != "" {
-			relPath, err := filepath.Rel(repoRoot, absResolved)
-			if err == nil && !strings.HasPrefix(relPath, "..") {
-				count++
-			}
 		}
 	}
 
