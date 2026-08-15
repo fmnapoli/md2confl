@@ -87,3 +87,22 @@ func validationError(detail string) *APIError {
 		Hint:       "check your Markdown for unsupported elements",
 	}
 }
+
+// comalaApprovalError reports a Comala Document Management approval that did
+// not reach the target ("Approved") state. Deliberately separate from
+// validationError: that message ("invalid ADF content") is specific to the
+// Cloud/ADF publish path and is misleading here — this is the Server/DC
+// Storage Format path, and the failure is about a workflow state transition,
+// not document content.
+func comalaApprovalError(statusCode int, stateName, workflowMessage string) *APIError {
+	detail := workflowMessage
+	if detail == "" {
+		detail = fmt.Sprintf("workflow state is %q", stateName)
+	}
+	return &APIError{
+		Category:   ErrCategoryValidation,
+		StatusCode: statusCode,
+		Message:    fmt.Sprintf("Comala workflow approval was not applied (HTTP %d): %s", statusCode, detail),
+		Hint:       "check the space's Comala workflow configuration and the approval name being used",
+	}
+}
