@@ -207,6 +207,22 @@ md2confl --input doc.md --publish --server --force --approve \
 3. Se o workflow não estiver configurado na página (HTTP 404), é **silenciosamente ignorado** — não gera erro
 4. Se a aprovação falhar por outro motivo, emite um warning no stderr (não interrompe a execução)
 
+### O status HTTP não é o sinal de sucesso
+
+A API do Comala pode responder `400`/`422` mesmo quando a aprovação **foi
+aplicada** — o corpo costuma trazer `state.name`/`publishedState.name` já como
+`"Approved"`, junto de uma `messages[]` do tipo `ERROR` reclamando que a etapa
+nomeada (`"Review"`) não existe mais na configuração do workflow do espaço
+(sintoma de o workflow ter sido reconfigurado depois que a automação foi
+escrita). Essa mensagem é sobre a configuração do espaço, não sobre se a
+chamada aprovou a página.
+
+Por isso o md2confl decide pelo **corpo da resposta**, não pelo status HTTP:
+se `state`/`publishedState` já mostra `"Approved"`, a aprovação é reportada
+como bem-sucedida e a mensagem do workflow vira um log de aviso informativo
+(não um "Could not approve page"). Só é reportado como falha quando o estado
+de fato não chegou a `"Approved"`.
+
 ### Configuração via YAML
 
 ```yaml
