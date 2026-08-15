@@ -69,6 +69,14 @@ type fakeConfluenceServer struct {
 	// was persisted. 403 is the one status the client does not retry, so the
 	// failure reaches the caller instead of being absorbed.
 	failPropertyGets int
+
+	// approveStatus and approveBody, when approveStatus is non-zero, replace
+	// the default "workflow not configured" (404) answer of the Comala
+	// approvals/approve endpoint. Tests use this to emulate the real Comala
+	// response shapes — including the false-alarm case where the HTTP status
+	// looks like a failure but the body already shows the page Approved.
+	approveStatus int
+	approveBody   string
 }
 
 func newFakeConfluenceServer(t *testing.T) (*httptest.Server, *fakeConfluenceServer) {
@@ -250,8 +258,15 @@ func (f *fakeConfluenceServer) handleProperty(w http.ResponseWriter, r *http.Req
 
 func (f *fakeConfluenceServer) handle(w http.ResponseWriter, r *http.Request) {
 	switch {
-	// Comala Workflows approval — not configured.
+	// Comala Workflows approval.
 	case r.Method == http.MethodPatch && strings.Contains(r.URL.Path, "/approvals/approve"):
+		if f.approveStatus != 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(f.approveStatus)
+			_, _ = io.WriteString(w, f.approveBody)
+			return
+		}
+		// Default: not configured on the page.
 		http.Error(w, "no workflow", http.StatusNotFound)
 
 	// FindByTitle
