@@ -604,6 +604,72 @@ func (c *ServerClient) DownloadAttachment(downloadLink string) ([]byte, error) {
 	return data, nil
 }
 
+// approvalWorkflowResponse espelha o corpo que a Comala Document Management
+// API devolve para /approvals/approve. O ponto que importa aqui é que o HTTP
+// status NÃO é um sinal confiável de sucesso: a API pode responder 400/422
+// com o corpo mostrando state.name/publishedState.name já no estado-alvo
+// ("Approved") — ou seja, a transição de estado foi aplicada — junto de
+// messages[] reclamando (tipo "ERROR") de uma etapa de aprovação nomeada
+// (ex.: "Review") que não existe mais na configuração do workflow do espaço.
+// Essas mensagens são sobre a configuração do espaço, não sobre se ESTA
+// chamada aprovou a página. Incidente de referência: run de publish no TDN
+// (ago/2026) que emitiu WARN "Could not approve page" em 13 de ~27 páginas —
+// todas de fato aprovadas, confirmado olhando o estado delas no Confluence.
+type approvalWorkflowResponse struct {
+	State          *workflowState    `json:"state"`
+	PublishedState *workflowState    `json:"publishedState"`
+	Messages       []workflowMessage `json:"messages"`
+}
+
+// workflowState é o bloco de estado do workflow do Comala (atual ou publicado).
+type workflowState struct {
+	Name string `json:"name"`
+	// O corpo também traz "final": true, mas ele NÃO serve como critério de
+	// sucesso — um workflow pode ter estado final chamado "Rejected", que é
+	// final e não é aprovação. Por isso a decisão é pelo nome do estado.
+}
+
+// workflowMessage é uma mensagem de nível workflow (tipicamente uma queixa de
+// configuração do espaço, ex.: "approval Review does not exist").
+type workflowMessage struct {
+	Type  string `json:"type"`
+	Title string `json:"title"`
+	HTML  string `json:"html"`
+	Code  string `json:"code"`
+}
+
+// approved reporta se algum dos blocos de estado nomeia o estado-alvo
+// "Approved" — o sinal real de que a transição de aprovação aconteceu.
+func (r approvalWorkflowResponse) approved() bool {
+	return r.State.namedApproved() || r.PublishedState.namedApproved()
+}
+
+// stateName retorna o nome do estado atual para mensagens de erro, com um
+// fallback quando o corpo não trouxe o bloco "state".
+func (r approvalWorkflowResponse) stateName() string {
+	if r.State != nil {
+		return r.State.Name
+	}
+	return "unknown"
+}
+
+// errorMessages junta as mensagens do tipo ERROR do workflow, usadas tanto no
+// log de aviso (aprovação bem-sucedida com ressalva de config) quanto no
+// detalhe do erro (aprovação de fato não aplicada).
+func (r approvalWorkflowResponse) errorMessages() string {
+	var msgs []string
+	for _, m := range r.Messages {
+		if strings.EqualFold(m.Type, "ERROR") {
+			msgs = append(msgs, m.HTML)
+		}
+	}
+	return strings.Join(msgs, "; ")
+}
+
+func (s *workflowState) namedApproved() bool {
+	return s != nil && strings.EqualFold(s.Name, "Approved")
+}
+
 // ApproveWorkflow aprova uma página via Comala Document Management API.
 // O approvalName é o nome da aprovação no workflow (ex: "Review").
 // Retorna nil se a aprovação foi bem-sucedida ou se o workflow não está configurado (404).
@@ -632,9 +698,36 @@ func (c *ServerClient) ApproveWorkflow(pageID, approvalName string) error {
 		return nil
 	}
 
-	if resp.StatusCode != 200 {
-		return c.handleErrorResponse(resp)
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("reading approve response: %w", err)
 	}
 
-	return nil
+	// Corpo reconhecível como resposta de workflow do Comala: decide pelo
+	// estado, não pelo status HTTP (ver comentário em approvalWorkflowResponse).
+	var wf approvalWorkflowResponse
+	isWorkflowBody := json.Unmarshal(respBody, &wf) == nil &&
+		(wf.State != nil || wf.PublishedState != nil || len(wf.Messages) > 0)
+
+	if isWorkflowBody && wf.approved() {
+		if msg := wf.errorMessages(); msg != "" {
+			c.logger.Warn("Comala workflow reported a space configuration issue, but the page was approved",
+				"pageID", pageID, "message", msg)
+		}
+		return nil
+	}
+
+	if resp.StatusCode == 200 {
+		return nil
+	}
+
+	if isWorkflowBody {
+		return comalaApprovalError(resp.StatusCode, wf.stateName(), wf.errorMessages())
+	}
+
+	// Corpo não reconhecido como resposta de workflow (ex.: erro de auth/proxy):
+	// cai na categorização genérica compartilhada com o client Cloud. O corpo já
+	// foi lido acima, então precisa ser reidratado antes de delegar.
+	resp.Body = io.NopCloser(bytes.NewReader(respBody))
+	return c.handleErrorResponse(resp)
 }
