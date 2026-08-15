@@ -623,8 +623,10 @@ type approvalWorkflowResponse struct {
 
 // workflowState é o bloco de estado do workflow do Comala (atual ou publicado).
 type workflowState struct {
-	Name  string `json:"name"`
-	Final bool   `json:"final"`
+	Name string `json:"name"`
+	// O corpo também traz "final": true, mas ele NÃO serve como critério de
+	// sucesso — um workflow pode ter estado final chamado "Rejected", que é
+	// final e não é aprovação. Por isso a decisão é pelo nome do estado.
 }
 
 // workflowMessage é uma mensagem de nível workflow (tipicamente uma queixa de
