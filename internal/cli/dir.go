@@ -150,7 +150,7 @@ func (app *appEnv) runDirServer(tree *DirEntry) error {
 	// Approve all published pages via Comala Workflows (after all updates are done)
 	if app.approve {
 		for _, res := range app.docResults {
-			if res.pageID != "" {
+			if res.pageID != "" && !res.linkOnly {
 				if err := client.ApproveWorkflow(res.pageID, "Review"); err != nil {
 					app.logger.Warn("Could not approve page", "pageID", res.pageID, "error", err)
 				}
@@ -166,6 +166,7 @@ func (app *appEnv) publishDirTreeServer(client *confluence.ServerClient, parentI
 	var pagePath string
 	var pageSource []byte
 	var storageHTML string
+	var pageSVGs []string
 
 	if tree.Readme != nil {
 		pagePath = tree.Readme.Path
@@ -186,7 +187,7 @@ func (app *appEnv) publishDirTreeServer(client *confluence.ServerClient, parentI
 			return nil
 		}
 		storageHTML = html
-		_ = svgPaths // upload de SVGs tratado após publicação
+		pageSVGs = svgPaths
 	}
 
 	var title string
@@ -203,6 +204,10 @@ func (app *appEnv) publishDirTreeServer(client *confluence.ServerClient, parentI
 		existingPageID = extractPageID(pageSource)
 	}
 
+	// As referências de attachment entram antes de publicar: é esse corpo que a
+	// comparação de idempotência e o segundo pass usam como base.
+	storageHTML = patchMermaidRefs(storageHTML, pageSVGs)
+
 	dirResult, err := app.publishOrSkipServer(client, publishServerInput{
 		parentID:  parentID,
 		title:     title,
@@ -214,6 +219,8 @@ func (app *appEnv) publishDirTreeServer(client *confluence.ServerClient, parentI
 		app.recordDirFailure(tree, err)
 		return nil
 	}
+
+	uploadMermaidAttachments(client, dirResult.PageID, pageSVGs, app.logger)
 
 	func() {
 		unlock := app.lockOutput()
@@ -260,6 +267,7 @@ func (app *appEnv) publishDirTreeServer(client *confluence.ServerClient, parentI
 			continue
 		}
 		childTitle := titleFromSource(f.Content, strings.TrimSuffix(filepath.Base(f.Path), ".md"))
+		html = patchMermaidRefs(html, svgPaths)
 
 		childResult, err := app.publishOrSkipServer(client, publishServerInput{
 			parentID:  dirResult.PageID,
@@ -273,26 +281,7 @@ func (app *appEnv) publishDirTreeServer(client *confluence.ServerClient, parentI
 			continue
 		}
 
-		// Upload de SVGs mermaid
-		if len(svgPaths) > 0 {
-			patchedHTML, err := uploadAndPatchImagesServer(client, childResult.PageID, html, svgPaths, app.logger)
-			if err != nil {
-				app.logger.Warn("Failed to upload mermaid SVGs", "error", err)
-			} else if patchedHTML != html {
-				page, err := client.GetPage(childResult.PageID)
-				if err == nil {
-					if updated, err := client.UpdatePage(childResult.PageID, childResult.Title, patchedHTML, page.Version.Number); err != nil {
-						app.logger.Warn("Failed to update page with mermaid attachments", "error", err)
-					} else {
-						*childResult = *updated
-					}
-				}
-				// O segundo pass republica o finalHTML com os links
-				// resolvidos; sem esta atualização ele reenviaria o HTML
-				// anterior ao patch, apagando as referências de attachment.
-				html = patchedHTML
-			}
-		}
+		uploadMermaidAttachments(client, childResult.PageID, svgPaths, app.logger)
 
 		if app.writeMarker && childResult.PageID != "" {
 			if err := app.writePageIDMarker(f.Path, f.Content, childResult.PageID); err != nil {
@@ -340,68 +329,177 @@ type publishServerInput struct {
 	inputPath string
 }
 
+// skippedResult monta o resultado de uma página que já está publicada com o
+// conteúdo atual. A URL vem preenchida porque o segundo pass precisa dela para
+// resolver os links que apontam para esta página — sem ela ele cairia no
+// fallback viewpage.action.
+func (app *appEnv) skippedResult(page *confluence.PageResponse, title string) *confluence.PublishResult {
+	app.logger.Info("Skipped (unchanged)", "title", title, "pageID", page.ID)
+	// Uma URL relativa aqui viraria destino de link e mudaria de valor entre
+	// execuções, republicando quem aponta para esta página.
+	pageURL := ""
+	if page.Links.WebUI != "" {
+		base := page.Links.Base
+		if base == "" {
+			base = strings.TrimRight(app.url, "/")
+		}
+		pageURL = base + page.Links.WebUI
+	}
+	return &confluence.PublishResult{
+		PageID:   page.ID,
+		PageURL:  pageURL,
+		Title:    title,
+		SpaceKey: app.space,
+		Action:   "skipped",
+		Version:  page.Version.Number,
+	}
+}
+
 // publishOrSkipServer publica ou atualiza uma página via Server/DC API.
+// A decisão de pular compara o digest da fonte guardado numa content property
+// da página com o do conteúdo atual (ver idempotency.go): comparar o HTML cru
+// com o corpo publicado não funciona, porque este já passou pela resolução de
+// links e pelas reescritas do Storage Format feitas pelo próprio Confluence.
 func (app *appEnv) publishOrSkipServer(client *confluence.ServerClient, in publishServerInput) (*confluence.PublishResult, error) {
+	digest := sourceDigest(in.title, in.html)
+
 	switch {
 	case in.pageID != "":
-		page, err := client.GetPage(in.pageID)
+		// A property vem no mesmo request da página, via expand.
+		page, err := client.GetPageWithProperty(in.pageID, digestPropertyKey)
 		if err != nil {
 			return nil, app.wrapConfluenceError(err)
 		}
-		if page.Body.AtlasDocFormat.Value == in.html {
-			app.logger.Info("Skipped (unchanged)", "title", in.title, "pageID", in.pageID)
-			return &confluence.PublishResult{
-				PageID: in.pageID,
-				// Sem a URL, o segundo pass cai no fallback viewpage.action
-				// para qualquer link que aponte para esta página.
-				PageURL:  page.Links.Base + page.Links.WebUI,
-				Title:    in.title,
-				SpaceKey: app.space,
-				Action:   "skipped",
-				Version:  page.Version.Number,
-			}, nil
+		if serverPageUnchanged(page.Property, digest, page.Body.AtlasDocFormat.Value, in.html) {
+			return app.skippedResult(page, in.title), nil
 		}
-		result, err := client.UpdatePage(in.pageID, in.title, in.html, page.Version.Number)
-		if err != nil {
-			return nil, app.wrapConfluenceError(err)
-		}
-		return result, nil
+		return app.updateAndStampServer(client, page, in, digest)
 
 	case app.force:
-		page, err := client.FindByTitle(app.space, in.title)
+		found, err := client.FindByTitle(app.space, in.title)
 		if err != nil {
 			return nil, app.wrapConfluenceError(err)
 		}
 		// Only reuse existing page if it belongs to the correct parent.
 		// Prevents overwriting pages with the same title in other sections.
-		if page != nil && in.parentID != "" && page.ParentID != in.parentID {
+		if found != nil && in.parentID != "" && found.ParentID != in.parentID {
 			app.logger.Info("Skipping page with same title under different parent",
-				"title", in.title, "found_parent", page.ParentID, "expected_parent", in.parentID)
-			page = nil
+				"title", in.title, "found_parent", found.ParentID, "expected_parent", in.parentID)
+			found = nil
 		}
-		if page != nil {
-			if err := app.moveIfNeededServer(client, page.ID, page.ParentID, in.parentID); err != nil {
-				return nil, err
-			}
-			result, err := client.UpdatePage(page.ID, in.title, in.html, page.Version.Number)
+		if found != nil {
+			// A busca por título não expande properties: relê a página por ID
+			// para saber, sem ambiguidade, se existe digest gravado. Sem essa
+			// certeza não dá para decidir se é preciso invalidá-lo antes de
+			// escrever o corpo.
+			page, err := client.GetPageWithProperty(found.ID, digestPropertyKey)
 			if err != nil {
 				return nil, app.wrapConfluenceError(err)
 			}
-			return result, nil
+			page.ParentID = found.ParentID
+			if serverPageUnchanged(page.Property, digest, page.Body.AtlasDocFormat.Value, in.html) {
+				return app.skippedResult(page, in.title), nil
+			}
+			if err := app.moveIfNeededServer(client, page.ID, page.ParentID, in.parentID); err != nil {
+				return nil, err
+			}
+			return app.updateAndStampServer(client, page, in, digest)
 		}
-		result, err := client.CreatePage(app.space, in.title, in.parentID, in.html)
-		if err != nil {
-			return nil, app.wrapConfluenceError(err)
-		}
-		return result, nil
+		return app.createAndStampServer(client, in, digest)
 
 	default:
-		result, err := client.CreatePage(app.space, in.title, in.parentID, in.html)
-		if err != nil {
-			return nil, app.wrapConfluenceError(err)
-		}
-		return result, nil
+		return app.createAndStampServer(client, in, digest)
 	}
+}
+
+// updateAndStampServer escreve o corpo da página e regrava o digest da fonte.
+//
+// A ordem é: invalidar o digest anterior → escrever o corpo → gravar o digest
+// novo. Gravar só no fim não basta: se a escrita do corpo desse certo e a do
+// digest não (5xx, endpoint bloqueado, processo morto entre as duas), a página
+// ficaria com o corpo novo e o digest da fonte ANTERIOR — e qualquer execução
+// posterior cuja fonte tivesse aquele digest (um revert, um rollback, rodar uma
+// tag antiga) seria pulada, deixando o conteúdo errado publicado em silêncio.
+//
+// Invalidando antes, toda janela de falha deixa a página SEM digest, que é o
+// estado que faz a execução seguinte republicar.
+func (app *appEnv) updateAndStampServer(client *confluence.ServerClient, page *confluence.PageResponse, in publishServerInput, digest string) (*confluence.PublishResult, error) {
+	if page.Property.Exists() {
+		if err := client.DeleteContentProperty(page.ID, digestPropertyKey); err != nil {
+			// Seguir daqui recriaria exatamente o buraco descrito acima, então
+			// a página fica como está e o documento entra como falha.
+			return nil, app.wrapConfluenceErrorf(err,
+				"the page was left untouched on purpose: updating it while the previous digest is still stored would make a later run skip it",
+				"invalidating the source digest of page %s before updating it", page.ID)
+		}
+	}
+
+	result, err := client.UpdatePage(page.ID, in.title, in.html, page.Version.Number)
+	if err != nil {
+		return nil, app.wrapConfluenceError(err)
+	}
+	app.storePageDigest(client, page.ID, pageDigest{Digest: digest})
+	return result, nil
+}
+
+// createAndStampServer cria a página e grava o digest da fonte. Página nova não
+// tem digest anterior para invalidar.
+func (app *appEnv) createAndStampServer(client *confluence.ServerClient, in publishServerInput, digest string) (*confluence.PublishResult, error) {
+	result, err := client.CreatePage(app.space, in.title, in.parentID, in.html)
+	if err != nil {
+		return nil, app.wrapConfluenceError(err)
+	}
+	app.storePageDigest(client, result.PageID, pageDigest{Digest: digest})
+	return result, nil
+}
+
+// storePageDigest grava o digest da fonte na content property da página, sempre
+// depois de a escrita do corpo ter dado certo e do digest anterior ter sido
+// invalidado (ver updateAndStampServer). Por isso a chave nunca existe aqui, e
+// a gravação é sempre uma criação.
+//
+// Uma falha aqui é só avisada, e aí sim o pior efeito é a página ser
+// republicada na próxima execução: o que ficou para trás foi a ausência de
+// digest, não um digest defasado.
+func (app *appEnv) storePageDigest(client *confluence.ServerClient, pageID string, value pageDigest) {
+	if pageID == "" {
+		return
+	}
+	if err := client.SetContentProperty(pageID, digestPropertyKey, value, 0); err != nil {
+		app.logger.Warn("Could not store the source digest — this page will be republished on the next run",
+			"pageID", pageID, "error", err)
+		app.addWarning(fmt.Sprintf("could not store the source digest for page %s: %v", pageID, err))
+		return
+	}
+	app.verifyDigestPersisted(client, pageID, value.Digest)
+}
+
+// verifyDigestPersisted relê o digest da primeira página gravada na execução.
+//
+// Uma instância pode aceitar a escrita e não devolver o valor (foi o que o
+// marcador em comentário HTML fazia: o Confluence descartava em silêncio). Sem
+// esta releitura o sintoma é indistinguível de "nada mudou": a ferramenta
+// segue republicando tudo e ninguém sabe por quê.
+//
+// A verificação só se dá por feita quando a leitura acontece: um GET que falha
+// por acaso não pode desligar a checagem da execução inteira.
+func (app *appEnv) verifyDigestPersisted(client *confluence.ServerClient, pageID, digest string) {
+	if app.digestCheck == nil || !app.digestCheck.begin() {
+		return
+	}
+	prop, err := client.GetContentProperty(pageID, digestPropertyKey)
+	if err != nil {
+		app.logger.Debug("Could not verify the source digest", "pageID", pageID, "error", err)
+		app.digestCheck.abort()
+		return
+	}
+	if storedDigest(prop) == digest {
+		return
+	}
+	app.logger.Warn("This Confluence instance did not keep the md2confl source digest — every run will republish every page",
+		"pageID", pageID, "property", digestPropertyKey)
+	app.addWarning("Confluence did not keep the source digest (content property " +
+		digestPropertyKey + "); pages will be republished on every run")
 }
 
 // moveIfNeededServer move uma página para o parent correto via Server/DC API.
@@ -423,6 +521,12 @@ func (app *appEnv) moveIfNeededServer(client *confluence.ServerClient, pageID, c
 
 // resolveInterDocLinksServer substitui links relativos *.md no Storage Format HTML
 // por URLs absolutas do Confluence usando os page-ids coletados no primeiro pass.
+//
+// finalHTML é sempre o corpo pré-resolução: é dele que sai o corpo canônico
+// desta execução, comparado com o que está publicado. Assim a fase é idempotente
+// (nada a fazer quando a página já está com os links resolvidos) sem deixar de
+// corrigir a página quando a URL de destino muda — por exemplo quando o título
+// da página alvo muda e o link precisa apontar para o novo endereço.
 func (app *appEnv) resolveInterDocLinksServer(client *confluence.ServerClient) error {
 	linkMap := app.serverLinkMap()
 
@@ -444,13 +548,15 @@ func (app *appEnv) resolveInterDocLinksServer(client *confluence.ServerClient) e
 			continue
 		}
 
+		if sameHrefs(page.Body.AtlasDocFormat.Value, patchedHTML) {
+			app.logger.Debug("Inter-document links already resolved", "file", filepath.Base(absPath))
+			continue
+		}
+
 		if _, err := client.UpdatePage(res.pageID, res.title, patchedHTML, page.Version.Number); err != nil {
 			app.logger.Warn("Could not update page with resolved links", "pageID", res.pageID, "error", err)
 			continue
 		}
-
-		// Mantém finalHTML alinhado ao que está publicado.
-		res.finalHTML = patchedHTML
 
 		app.logger.Info("Resolved inter-document links", "count", count, "file", filepath.Base(absPath))
 	}

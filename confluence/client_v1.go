@@ -102,6 +102,9 @@ type v1PageResponse struct {
 		WebUI string `json:"webui"`
 		Base  string `json:"base"`
 	} `json:"_links"`
+	Metadata struct {
+		Properties map[string]ContentProperty `json:"properties"`
+	} `json:"metadata"`
 }
 
 func (r *v1PageResponse) toPublishResult(spaceKey, action string) *PublishResult {
@@ -181,7 +184,26 @@ func (c *ServerClient) CreatePage(spaceKey, title, parentID, storageContent stri
 
 // GetPage busca uma página por ID.
 func (c *ServerClient) GetPage(pageID string) (*PageResponse, error) {
-	reqURL := fmt.Sprintf("%s/content/%s?expand=body.storage,version,ancestors", c.baseAPIURL, pageID)
+	return c.getPage(pageID, "")
+}
+
+// GetPageWithProperty busca uma página por ID já trazendo uma content property
+// no mesmo request, via expand=metadata.properties. Evita um GET extra por
+// página só para ler o metadado.
+//
+// A chave precisa ser alfanumérica: uma chave com hífen faz o Confluence
+// Server responder HTTP 500 nesse expand (verificado contra o TDN), embora a
+// mesma chave funcione no endpoint /property/{key}.
+func (c *ServerClient) GetPageWithProperty(pageID, propertyKey string) (*PageResponse, error) {
+	return c.getPage(pageID, propertyKey)
+}
+
+func (c *ServerClient) getPage(pageID, propertyKey string) (*PageResponse, error) {
+	expand := "body.storage,version,ancestors"
+	if propertyKey != "" {
+		expand += ",metadata.properties." + propertyKey
+	}
+	reqURL := fmt.Sprintf("%s/content/%s?expand=%s", c.baseAPIURL, pageID, expand)
 	req, err := http.NewRequest("GET", reqURL, nil)
 	if err != nil {
 		return nil, err
@@ -202,7 +224,102 @@ func (c *ServerClient) GetPage(pageID string) (*PageResponse, error) {
 		return nil, fmt.Errorf("decoding page response: %w", err)
 	}
 
-	return page.toPageResponse(), nil
+	result := page.toPageResponse()
+	if propertyKey != "" {
+		if prop, ok := page.Metadata.Properties[propertyKey]; ok {
+			result.Property = prop
+		}
+	}
+	return result, nil
+}
+
+// GetContentProperty lê uma content property da página. Devolve uma property
+// zerada (Exists() == false) quando a chave não existe — 404 aqui é resposta
+// normal, não erro.
+func (c *ServerClient) GetContentProperty(pageID, key string) (ContentProperty, error) {
+	reqURL := fmt.Sprintf("%s/content/%s/property/%s", c.baseAPIURL, pageID, url.PathEscape(key))
+	req, err := http.NewRequest("GET", reqURL, nil)
+	if err != nil {
+		return ContentProperty{}, err
+	}
+
+	resp, err := c.doRequest(req)
+	if err != nil {
+		return ContentProperty{}, &APIError{Category: ErrCategoryNetwork, Message: fmt.Sprintf("network error: %v", err)}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 404 {
+		return ContentProperty{}, nil
+	}
+	if resp.StatusCode != 200 {
+		return ContentProperty{}, c.handleErrorResponse(resp)
+	}
+
+	var prop ContentProperty
+	if err := json.NewDecoder(resp.Body).Decode(&prop); err != nil {
+		return ContentProperty{}, fmt.Errorf("decoding content property: %w", err)
+	}
+	return prop, nil
+}
+
+// DeleteContentProperty remove uma content property. Uma chave que não existe
+// não é erro: o efeito pretendido — a página não carregar aquele metadado — já
+// está valendo.
+func (c *ServerClient) DeleteContentProperty(pageID, key string) error {
+	reqURL := fmt.Sprintf("%s/content/%s/property/%s", c.baseAPIURL, pageID, url.PathEscape(key))
+	req, err := http.NewRequest("DELETE", reqURL, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.doRequest(req)
+	if err != nil {
+		return &APIError{Category: ErrCategoryNetwork, Message: fmt.Sprintf("network error: %v", err)}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 204 || resp.StatusCode == 200 || resp.StatusCode == 404 {
+		return nil
+	}
+	return c.handleErrorResponse(resp)
+}
+
+// SetContentProperty grava uma content property. currentVersion é a versão da
+// property já existente (0 quando ela não existe): o Confluence cria com POST e
+// atualiza com PUT informando a versão seguinte.
+//
+// Gravar uma property não incrementa a versão da página (verificado contra o
+// TDN) — o histórico da página não é poluído.
+func (c *ServerClient) SetContentProperty(pageID, key string, value any, currentVersion int) error {
+	body := map[string]any{"value": value}
+	method := "POST"
+	if currentVersion > 0 {
+		method = "PUT"
+		body["version"] = map[string]any{"number": currentVersion + 1}
+	}
+
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+
+	reqURL := fmt.Sprintf("%s/content/%s/property/%s", c.baseAPIURL, pageID, url.PathEscape(key))
+	req, err := http.NewRequest(method, reqURL, bytes.NewReader(jsonBody))
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.doRequest(req)
+	if err != nil {
+		return &APIError{Category: ErrCategoryNetwork, Message: fmt.Sprintf("network error: %v", err)}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return c.handleErrorResponse(resp)
+	}
+	return nil
 }
 
 // UpdatePage atualiza uma página existente.
@@ -276,8 +393,14 @@ func (c *ServerClient) FindByTitle(spaceKey, title string) (*PageResponse, error
 		return nil, c.handleErrorResponse(resp)
 	}
 
+	// Na busca, o "base" só vem no _links do envelope — o _links de cada
+	// resultado traz apenas o caminho (webui). Sem copiá-lo, a URL da página
+	// sairia relativa e não serviria como destino de link.
 	var result struct {
 		Results []v1PageResponse `json:"results"`
+		Links   struct {
+			Base string `json:"base"`
+		} `json:"_links"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decoding search response: %w", err)
@@ -286,7 +409,11 @@ func (c *ServerClient) FindByTitle(spaceKey, title string) (*PageResponse, error
 	if len(result.Results) == 0 {
 		return nil, nil
 	}
-	return result.Results[0].toPageResponse(), nil
+	page := result.Results[0]
+	if page.Links.Base == "" {
+		page.Links.Base = result.Links.Base
+	}
+	return page.toPageResponse(), nil
 }
 
 // UploadAttachment faz upload de um arquivo como attachment (API v1).

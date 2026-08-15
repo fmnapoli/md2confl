@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -20,24 +21,54 @@ import (
 
 // fakeServerPage is an in-memory Confluence Server/DC page.
 type fakeServerPage struct {
-	ID      string
-	Title   string
-	Body    string
+	ID         string
+	Title      string
+	Body       string
+	Version    int
+	Parent     string
+	Properties map[string]fakeProperty
+}
+
+// fakeProperty is a content property stored against a page.
+type fakeProperty struct {
+	Value   json.RawMessage
 	Version int
-	Parent  string
 }
 
 // fakeConfluenceServer emulates the subset of the Confluence Server/DC REST
-// API v1 used by ServerClient: find-by-title, create, get and update page.
+// API v1 used by ServerClient: find-by-title, create, get and update page, and
+// content properties.
 type fakeConfluenceServer struct {
-	mu      sync.Mutex
-	pages   map[string]*fakeServerPage
-	counter int
-	baseURL string
+	mu         sync.Mutex
+	pages      map[string]*fakeServerPage
+	counter    int
+	macroCount int
+	baseURL    string
 
 	// searchHandler, when set, replaces the find-by-title endpoint. Tests use
 	// it to emulate a WAF/proxy blocking GET /rest/api/content with 403.
 	searchHandler http.HandlerFunc
+
+	// dropProperties makes the server accept a content property write and
+	// keep nothing, emulating an instance that discards tool metadata — the
+	// failure mode that an HTML comment in the body hit on the real TDN.
+	dropProperties bool
+
+	// failPropertySets rejects creating or updating a content property while
+	// still allowing it to be deleted, emulating a run that updates the body
+	// and then loses the metadata write (5xx, a blocked endpoint, or the
+	// process dying in between).
+	failPropertySets bool
+
+	// failPropertyDeletes rejects removing a content property, which is what
+	// invalidates the previous digest before the body is rewritten.
+	failPropertyDeletes bool
+
+	// failPropertyGets makes the next N reads of a content property fail with
+	// 403, emulating a one-off error on the read-back that confirms the digest
+	// was persisted. 403 is the one status the client does not retry, so the
+	// failure reaches the caller instead of being absorbed.
+	failPropertyGets int
 }
 
 func newFakeConfluenceServer(t *testing.T) (*httptest.Server, *fakeConfluenceServer) {
@@ -47,6 +78,39 @@ func newFakeConfluenceServer(t *testing.T) (*httptest.Server, *fakeConfluenceSer
 	f.baseURL = ts.URL
 	t.Cleanup(ts.Close)
 	return ts, f
+}
+
+// macroIDRegex encontra a abertura de uma macro sem ac:macro-id.
+var macroIDRegex = regexp.MustCompile(`<ac:structured-macro ac:name="([^"]*)"`)
+
+// htmlCommentRegex encontra um comentário HTML.
+var htmlCommentRegex = regexp.MustCompile(`(?s)<!--.*?-->`)
+
+// sanitizeStorage reproduz o que o Confluence Server faz com o Storage Format
+// que recebe, medido contra o TDN em ago/2026 numa página publicada por esta
+// ferramenta: comentários HTML somem, macros ganham ac:schema-version e um
+// ac:macro-id gerado no servidor, e caracteres não-ASCII viram entidades.
+//
+// Sem isso o fake devolve exatamente o que recebeu, e qualquer mecanismo de
+// idempotência baseado em comparar corpos — ou em esconder um marcador dentro
+// do corpo — passa no teste e falha em produção.
+func (f *fakeConfluenceServer) sanitizeStorage(body string) string {
+	body = htmlCommentRegex.ReplaceAllString(body, "")
+	body = macroIDRegex.ReplaceAllStringFunc(body, func(m string) string {
+		sub := macroIDRegex.FindStringSubmatch(m)
+		f.macroCount++
+		return fmt.Sprintf(`<ac:structured-macro ac:name=%q ac:schema-version="1" ac:macro-id="fake-%d"`,
+			sub[1], f.macroCount)
+	})
+	var sb strings.Builder
+	for _, r := range body {
+		if r > 127 {
+			fmt.Fprintf(&sb, "&#%d;", r)
+			continue
+		}
+		sb.WriteRune(r)
+	}
+	return sb.String()
 }
 
 // pageByTitle returns the stored page with the given title, or nil.
@@ -62,8 +126,8 @@ func (f *fakeConfluenceServer) pageByTitle(title string) *fakeServerPage {
 	return nil
 }
 
-func (f *fakeConfluenceServer) encode(w http.ResponseWriter, p *fakeServerPage) {
-	_ = json.NewEncoder(w).Encode(map[string]any{
+func (f *fakeConfluenceServer) encode(w http.ResponseWriter, p *fakeServerPage, expand string) {
+	payload := map[string]any{
 		"id":    p.ID,
 		"type":  "page",
 		"title": p.Title,
@@ -76,7 +140,112 @@ func (f *fakeConfluenceServer) encode(w http.ResponseWriter, p *fakeServerPage) 
 			"webui": "/display/TEST/" + p.ID,
 			"base":  f.baseURL,
 		},
-	})
+	}
+	// expand=metadata.properties.<key>, como na API v1.
+	if key, ok := propertyExpandKey(expand); ok {
+		props := map[string]any{}
+		if prop, found := p.Properties[key]; found {
+			props[key] = map[string]any{
+				"key":     key,
+				"value":   prop.Value,
+				"version": map[string]any{"number": prop.Version},
+			}
+		}
+		payload["metadata"] = map[string]any{"properties": props}
+	}
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+// propertyExpandKey extrai a chave pedida em expand=metadata.properties.<key>.
+func propertyExpandKey(expand string) (string, bool) {
+	for _, part := range strings.Split(expand, ",") {
+		if key, found := strings.CutPrefix(part, "metadata.properties."); found {
+			return key, true
+		}
+	}
+	return "", false
+}
+
+// handleProperty serves /rest/api/content/{id}/property/{key}.
+func (f *fakeConfluenceServer) handleProperty(w http.ResponseWriter, r *http.Request, pageID, key string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	p, ok := f.pages[pageID]
+	if !ok {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		if f.failPropertyGets > 0 {
+			f.failPropertyGets--
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		prop, found := p.Properties[key]
+		if !found {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"statusCode":404,"message":"No content property found"}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"key": key, "value": prop.Value, "version": map[string]any{"number": prop.Version},
+		})
+
+	case http.MethodPost, http.MethodPut:
+		if f.failPropertySets {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		_, exists := p.Properties[key]
+		// O Confluence real rejeita POST em chave existente: criar e atualizar
+		// são verbos diferentes. Aceitar como upsert esconderia o caso em que a
+		// ferramenta escreve sem antes invalidar o valor anterior.
+		if r.Method == http.MethodPost && exists {
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"statusCode":409,"message":"Property already exists"}`))
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Value   json.RawMessage `json:"value"`
+			Version struct {
+				Number int `json:"number"`
+			} `json:"version"`
+		}
+		_ = json.Unmarshal(body, &req)
+		version := req.Version.Number
+		if version == 0 {
+			version = 1
+		}
+		// A instância aceita a escrita e não guarda nada.
+		if !f.dropProperties {
+			if p.Properties == nil {
+				p.Properties = map[string]fakeProperty{}
+			}
+			p.Properties[key] = fakeProperty{Value: req.Value, Version: version}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"key": key, "value": req.Value, "version": map[string]any{"number": version},
+		})
+
+	case http.MethodDelete:
+		if f.failPropertyDeletes {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		if _, exists := p.Properties[key]; !exists {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		delete(p.Properties, key)
+		w.WriteHeader(http.StatusNoContent)
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 func (f *fakeConfluenceServer) handle(w http.ResponseWriter, r *http.Request) {
@@ -102,10 +271,15 @@ func (f *fakeConfluenceServer) handle(w http.ResponseWriter, r *http.Request) {
 				},
 				"version":   map[string]any{"number": p.Version},
 				"ancestors": []map[string]any{{"id": p.Parent}},
-				"_links":    map[string]any{"webui": "/display/TEST/" + p.ID, "base": f.baseURL},
+				// Como na API real, o _links do resultado traz só o caminho:
+				// o "base" fica no envelope da busca.
+				"_links": map[string]any{"webui": "/display/TEST/" + p.ID},
 			})
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"results": results})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"results": results,
+			"_links":  map[string]any{"base": f.baseURL},
+		})
 
 	// CreatePage
 	case r.Method == http.MethodPost && r.URL.Path == "/rest/api/content":
@@ -126,9 +300,9 @@ func (f *fakeConfluenceServer) handle(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.counter++
 		p := &fakeServerPage{
-			ID:      fmt.Sprintf("page-%d", f.counter),
+			ID:      fmt.Sprintf("%d", 1050000000+f.counter),
 			Title:   req.Title,
-			Body:    req.Body.Storage.Value,
+			Body:    f.sanitizeStorage(req.Body.Storage.Value),
 			Version: 1,
 		}
 		if len(req.Ancestors) > 0 {
@@ -138,7 +312,13 @@ func (f *fakeConfluenceServer) handle(w http.ResponseWriter, r *http.Request) {
 		cp := *p
 		f.mu.Unlock()
 
-		f.encode(w, &cp)
+		f.encode(w, &cp, "")
+
+	// Content properties
+	case strings.HasPrefix(r.URL.Path, "/rest/api/content/") && strings.Contains(r.URL.Path, "/property/"):
+		rest := strings.TrimPrefix(r.URL.Path, "/rest/api/content/")
+		id, key, _ := strings.Cut(rest, "/property/")
+		f.handleProperty(w, r, id, key)
 
 	// GetPage / UpdatePage
 	case strings.HasPrefix(r.URL.Path, "/rest/api/content/"):
@@ -165,12 +345,12 @@ func (f *fakeConfluenceServer) handle(w http.ResponseWriter, r *http.Request) {
 			}
 			_ = json.Unmarshal(body, &req)
 			p.Title = req.Title
-			p.Body = req.Body.Storage.Value
+			p.Body = f.sanitizeStorage(req.Body.Storage.Value)
 			p.Version = req.Version.Number
 		}
 		cp := *p
 		f.mu.Unlock()
-		f.encode(w, &cp)
+		f.encode(w, &cp, r.URL.Query().Get("expand"))
 
 	default:
 		http.Error(w, "not found", http.StatusNotFound)

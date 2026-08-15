@@ -285,6 +285,24 @@ func (app *appEnv) uploadAndPatchImages(client *confluence.Client, doc *adf.Docu
 	return nil
 }
 
+// wrapConfluenceErrorf é wrapConfluenceError preservando contexto: a mensagem
+// da APIError sozinha ("unexpected API response 500") não diz que operação
+// falhou nem por que ela era importante.
+func (app *appEnv) wrapConfluenceErrorf(err error, hint, format string, args ...any) error {
+	var apiErr *apiError
+	if !errors.As(app.wrapConfluenceError(err), &apiErr) {
+		return fmt.Errorf("%s: %w", fmt.Sprintf(format, args...), err)
+	}
+	if hint == "" {
+		hint = apiErr.hint
+	}
+	return &apiError{
+		message:  fmt.Sprintf(format, args...) + ": " + apiErr.message,
+		hint:     hint,
+		exitCode: apiErr.exitCode,
+	}
+}
+
 func (app *appEnv) wrapConfluenceError(err error) error {
 	var apiErr *confluence.APIError
 	if errors.As(err, &apiErr) {
@@ -325,12 +343,17 @@ func (app *appEnv) writePageIDMarker(path string, source []byte, pageID string) 
 }
 
 // updatePageWithRetry fetches the current page version and updates it,
-// retrying once on a version conflict (409).
+// retrying once on a version conflict (409). A page whose body already matches
+// is left alone: the second pass runs on every publish, and rewriting an
+// identical body would add a page version per run.
 func updatePageWithRetry(client *confluence.Client, pageID, title, adfJSON string) error {
 	for attempt := 0; attempt < 2; attempt++ {
 		page, err := client.GetPage(pageID)
 		if err != nil {
 			return err
+		}
+		if adf.IsUnchanged(page.Body.AtlasDocFormat.Value, adfJSON) {
+			return nil
 		}
 		_, err = client.UpdatePage(pageID, title, adfJSON, page.Version.Number)
 		if err == nil {
@@ -360,94 +383,23 @@ func (app *appEnv) handlePublishServer(path string, source []byte, storageHTML s
 	client.SetLogger(app.logger)
 
 	title := deriveTitle(app.title, path, source)
-	pageID := extractPageID(source)
 
-	var result *confluence.PublishResult
+	// O corpo publicado já sai com as referências de attachment dos SVGs — é o
+	// que a comparação de idempotência e o segundo pass de links usam como base.
+	storageHTML = patchMermaidRefs(storageHTML, svgPaths)
 
-	switch {
-	case pageID != "":
-		page, err := client.GetPage(pageID)
-		if err != nil {
-			return app.wrapConfluenceError(err)
-		}
-		// Compara conteúdo antes de atualizar (idempotência)
-		if page.Body.AtlasDocFormat.Value == storageHTML {
-			pageURL := page.Links.Base + page.Links.WebUI
-			app.logger.Info("Skipped (unchanged)", "title", title, "pageID", pageID)
-			func() {
-				unlock := app.lockOutput()
-				defer unlock()
-				printResult(app.stdout, Result{
-					Status:   "success",
-					PageID:   pageID,
-					PageURL:  pageURL,
-					Title:    title,
-					SpaceKey: app.space,
-					Action:   "skipped",
-					Version:  page.Version.Number,
-				}, app.jsonOutput)
-			}()
-			// Mesmo pulando a publicação, o resultado precisa entrar em
-			// docResults: sem ele o segundo pass ignora a página e os links
-			// relativos nunca são resolvidos — e como o conteúdo não muda,
-			// a página seguiria pulada (e quebrada) em todas as execuções.
-			app.recordDocResultServer(path, pageID, pageURL, title, storageHTML)
-			return nil
-		}
-		result, err = client.UpdatePage(pageID, title, storageHTML, page.Version.Number)
-		if err != nil {
-			return app.wrapConfluenceError(err)
-		}
-
-	case app.force:
-		page, err := client.FindByTitle(app.space, title)
-		if err != nil {
-			return app.wrapConfluenceError(err)
-		}
-		// Only reuse existing page if it belongs to the correct parent.
-		if page != nil && app.parentID != "" && page.ParentID != app.parentID {
-			app.logger.Info("Skipping page with same title under different parent",
-				"title", title, "found_parent", page.ParentID, "expected_parent", app.parentID)
-			page = nil
-		}
-		if page != nil {
-			result, err = client.UpdatePage(page.ID, title, storageHTML, page.Version.Number)
-			if err != nil {
-				return app.wrapConfluenceError(err)
-			}
-		} else {
-			result, err = client.CreatePage(app.space, title, app.parentID, storageHTML)
-			if err != nil {
-				return app.wrapConfluenceError(err)
-			}
-		}
-
-	default:
-		result, err = client.CreatePage(app.space, title, app.parentID, storageHTML)
-		if err != nil {
-			return app.wrapConfluenceError(err)
-		}
+	result, err := app.publishOrSkipServer(client, publishServerInput{
+		parentID:  app.parentID,
+		title:     title,
+		pageID:    extractPageID(source),
+		html:      storageHTML,
+		inputPath: path,
+	})
+	if err != nil {
+		return err
 	}
 
-	// Upload e patch de imagens mermaid (SVGs)
-	if len(svgPaths) > 0 {
-		patchedHTML, err := uploadAndPatchImagesServer(client, result.PageID, storageHTML, svgPaths, app.logger)
-		if err != nil {
-			app.logger.Warn("Failed to upload mermaid SVGs", "error", err)
-		} else if patchedHTML != storageHTML {
-			storageHTML = patchedHTML // atualizar para uso no docResults
-			// Re-publicar com referências de attachment
-			page, err := client.GetPage(result.PageID)
-			if err == nil {
-				updated, err := client.UpdatePage(result.PageID, result.Title, patchedHTML, page.Version.Number)
-				if err != nil {
-					app.logger.Warn("Failed to update page with mermaid attachments", "error", err)
-				} else {
-					*result = *updated
-				}
-			}
-		}
-	}
+	uploadMermaidAttachments(client, result.PageID, svgPaths, app.logger)
 
 	// Auto-approve via Comala Workflows (se configurado)
 	if app.approve {
@@ -464,7 +416,10 @@ func (app *appEnv) handlePublishServer(path string, source []byte, storageHTML s
 		}
 	}
 
-	app.logger.Info("Published", "title", result.Title, "action", result.Action, "pageID", result.PageID)
+	// O caso "skipped" já é logado por publishOrSkipServer.
+	if result.Action != "skipped" {
+		app.logger.Info("Published", "title", result.Title, "action", result.Action, "pageID", result.PageID)
+	}
 
 	func() {
 		unlock := app.lockOutput()

@@ -175,12 +175,12 @@ func TestLoadConfig_BoolPointers(t *testing.T) {
 	dir := t.TempDir()
 
 	tests := []struct {
-		name        string
-		yaml        string
-		forceNil    bool
-		forceVal    bool
-		markerNil   bool
-		markerVal   bool
+		name      string
+		yaml      string
+		forceNil  bool
+		forceVal  bool
+		markerNil bool
+		markerVal bool
 	}{
 		{
 			name:      "force true",

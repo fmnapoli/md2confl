@@ -74,13 +74,82 @@ graph TD
 
 ## Skip de páginas inalteradas
 
-Antes de atualizar uma página existente, o md2confl compara o ADF atual (via API) com o novo ADF gerado. Se o conteúdo é idêntico (após normalização JSON), a atualização é ignorada:
+Antes de atualizar uma página existente, o md2confl verifica se o conteúdo publicado já corresponde à fonte local. Em caso positivo a atualização é ignorada:
 
 ```
 - Skipped "Quick Start" (unchanged)
 ```
 
 Isso reduz chamadas à API e evita incrementar a versão da página desnecessariamente.
+
+### Cloud (ADF)
+
+A comparação é entre o ADF publicado (via API) e o ADF recém-gerado, após normalização JSON.
+
+### Server/DC (Storage Format)
+
+Comparar o HTML recém-gerado com o corpo publicado **não funciona** aqui, por dois motivos independentes:
+
+1. O corpo publicado passou pelo **second pass**, que troca os links relativos `*.md` por URLs do Confluence, enquanto o HTML recém-gerado ainda tem os links crus.
+2. O Confluence Server **reescreve o Storage Format que recebe**. Medido contra o TDN em ago/2026, comparando o corpo devolvido pela API com o HTML que a ferramenta enviou:
+   - comentários HTML são descartados por inteiro;
+   - macros ganham `ac:schema-version` e um `ac:macro-id` (UUID gerado no servidor — não há como reproduzi-lo localmente);
+   - caracteres não-ASCII viram entidades (`Operações` → `Opera&ccedil;&otilde;es`), o que atinge praticamente toda página em pt-br.
+
+Ou seja: o corpo publicado nunca é byte a byte igual ao gerado, com ou sem links. A consequência era republicar toda página em toda execução.
+
+Por isso o digest da fonte fica numa **content property** da página, fora do corpo:
+
+```json
+GET /rest/api/content/{id}/property/md2conflSource
+{ "value": { "digest": "791057e9…" } }
+```
+
+O digest cobre o título e o Storage Format gerado a partir do Markdown, **antes** da resolução de links. A comparação passa a ser fonte contra fonte. A property é lida junto com a página (`expand=metadata.properties.md2conflSource`, sem request extra), gravar não incrementa a versão da página, e a chave precisa ser alfanumérica — com hífen o Server responde HTTP 500 nesse expand.
+
+A ordem de escrita é parte do mecanismo:
+
+```text
+1. invalidar (DELETE) o digest anterior
+2. escrever o corpo (PUT)
+3. gravar o digest novo (POST)
+```
+
+Gravar só no passo 3, sem o passo 1, parece bastar — mas não basta. Se o corpo subisse e o digest não (5xx, endpoint bloqueado, processo morto entre os dois), a página ficaria com o **corpo novo e o digest da fonte anterior**; qualquer execução posterior cuja fonte tivesse aquele digest — um revert, um rollback, rodar uma tag antiga — seria pulada, deixando o conteúdo errado publicado sem nada no log. Invalidando antes, toda janela de falha deixa a página **sem digest**, que é o estado que faz a execução seguinte republicar.
+
+Quando a própria invalidação falha, a página **não é escrita** e o documento entra como falha da execução: avançar o corpo ali seria recriar exatamente esse buraco.
+
+Consequências práticas:
+
+| Situação | Comportamento |
+|----------|--------------|
+| Markdown, título ou conversor mudaram | Página republicada |
+| Só a resolução de links difere | Página pulada (o second pass já cuidou dela) |
+| Página sem a property (publicada por versão anterior) | Comparação byte a byte, como antes — republica uma vez e passa a ter a property |
+| Instância não guarda a property | Volta ao comportamento antigo (republica à toa, nunca pula página alterada) **e a execução avisa** |
+| Página editada à mão no Confluence | **Não** é revertida enquanto o Markdown não mudar |
+
+A cada execução, a primeira gravação de digest é relida para confirmar que o servidor guardou o valor. Se não guardou, sai um aviso nomeando a content property — sem ele o sintoma seria indistinguível de "nada mudou".
+
+O second pass também virou idempotente. Ele não compara corpos (pelo motivo 2 acima): compara os **valores de `href`** do corpo publicado com os do corpo que ele produziria agora, que é exatamente a pergunta que lhe cabe e a única parte do documento que atravessa o sanitizador intacta. Com isso ele não reescreve nada quando os links já estão resolvidos, mas ainda corrige a página quando o link precisa apontar para outro endereço (a página de destino foi renomeada e mudou de URL) ou quando uma execução interrompida deixou links crus no corpo.
+
+## Publicar um documento isolado do config
+
+```bash
+md2confl --config .md2confl.yml --input docs/tdn/operations/README.md
+```
+
+Só o documento filtrado é publicado — mas os links dele continuam precisando apontar para as páginas dos **outros** documentos do config, que esta execução não publicou. As páginas dos documentos de fora são registradas como destino de link a partir dos marcadores `<!-- confluence-page-id: ... -->` dos arquivos, sem publicar nada: só as páginas de fato referenciadas são consultadas na API, e elas não entram no auto-approve.
+
+Se um alvo não tiver marcador, não há como resolver o link, e a execução avisa nomeando o que foi publicado relativo:
+
+```text
+1 warning(s):
+  - README.md was published with relative Markdown links (cloudbuild.md, subscription-management.md);
+    publish the whole config so they resolve to Confluence URLs
+```
+
+Um link relativo que chega ao Confluence vira 404 para quem clica — é o modo de falha que motivou toda esta seção.
 
 ## Retry automático
 
